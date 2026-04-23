@@ -1,0 +1,2 @@
+﻿L24: 'print(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} 启动成功")'
+L89: 'print("📊 数据库表初始化完成")'
