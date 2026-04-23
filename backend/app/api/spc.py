@@ -4,15 +4,67 @@ SPC分析和导出相关API
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import Optional
-import io
+from typing import Optional, List
+from pathlib import Path
+import io, csv
+from openpyxl import load_workbook
+# pandas removed — no longer used
+# import pandas as pd
 
 from app.core.database import get_db
-from app.models import DataSource, AnalysisConfig, AIAnalysisRecord, SystemSettings
+from app.models import DataSource, DataSourceType, AnalysisConfig, AIAnalysisRecord, SystemSettings
 from app.schemas import AnalysisConfigCreate, ApiResponse
 from app.services.spc import calculate_spc
 from app.services.ai_agent import get_ai_analysis
 from app.services.export import export_service
+
+
+def _parse_file_values(file_path: str) -> List[List[float]]:
+    """
+    根据文件路径解析 Excel/CSV，返回 List[List[float]]。
+    模板格式：第1行表头，A列为行标题，数据区B2开始。
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    if path.suffix.lower() == '.csv':
+        rows = []
+        with open(path, newline='', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                # 跳过表头行（首行）
+                if reader.line_num == 1:
+                    continue
+                row_vals = []
+                for v in row:
+                    try:
+                        fv = float(v)
+                        if not (fv != fv):  # 排除 NaN
+                            row_vals.append(fv)
+                    except (ValueError, TypeError):
+                        pass
+                if row_vals:
+                    rows.append(row_vals)
+    else:
+        wb = load_workbook(path, data_only=True)
+        ws = wb.active
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            row_vals = []
+            for v in row:
+                if v is None:
+                    continue
+                try:
+                    fv = float(v)
+                    if not (fv != fv):  # 排除 NaN
+                        row_vals.append(fv)
+                except (ValueError, TypeError):
+                    pass
+            if row_vals:
+                rows.append(row_vals)
+        wb.close()
+    return rows
 
 router = APIRouter(prefix="/spc", tags=["SPC分析"])
 
@@ -42,13 +94,31 @@ async def calculate_spc_chart(
     data_source = db.query(DataSource).filter(DataSource.id == data_source_id).first()
     if not data_source:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    
-    if not data_source.data_values:
-        raise HTTPException(status_code=400, detail="数据源无有效数据")
-    
+
+    # 根据数据源类型获取数据值
+    if data_source.source_type == DataSourceType.FILE:
+        if not data_source.file_path:
+            raise HTTPException(status_code=400, detail="文件数据源未找到文件路径")
+        try:
+            data_values = _parse_file_values(data_source.file_path)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
+        if not data_values:
+            raise HTTPException(status_code=400, detail="文件中未找到有效数值数据")
+    elif data_source.source_type == DataSourceType.SYSTEM:
+        # TODO(系统对接): 根据 connection_config / query_config 查询外部数据源
+        raise HTTPException(status_code=501, detail="系统对接数据源暂不支持")
+    else:
+        # MANUAL：直接使用存储在 data_values 中的数据
+        if not data_source.data_values:
+            raise HTTPException(status_code=400, detail="数据源无有效数据")
+        data_values = data_source.data_values
+
     # 执行SPC计算
     result = calculate_spc(
-        data=data_source.data_values,
+        data=data_values,
         chart_type=chart_type,
         subgroup_size=subgroup_size,
         confidence_level=confidence_level,
@@ -83,15 +153,29 @@ async def analyze_with_ai(
     
     analysis_config = None
     spc_result = None
-    
+    data_values = None
+
     if analysis_config_id:
         analysis_config = db.query(AnalysisConfig).filter(
             AnalysisConfig.id == analysis_config_id
         ).first()
-        
-        if data_source.data_values and analysis_config:
+
+        # 获取数据值（与 calculate_spc_chart 相同的数据源类型分支逻辑）
+        if data_source.source_type == DataSourceType.FILE:
+            if data_source.file_path:
+                try:
+                    data_values = _parse_file_values(data_source.file_path)
+                except Exception:
+                    data_values = None
+        elif data_source.source_type == DataSourceType.SYSTEM:
+            # TODO(系统对接)
+            pass
+        else:
+            data_values = data_source.data_values
+
+        if data_values and analysis_config:
             spc_result = calculate_spc(
-                data=data_source.data_values,
+                data=data_values,
                 chart_type=analysis_config.chart_type.value,
                 subgroup_size=analysis_config.subgroup_size,
                 confidence_level=analysis_config.confidence_level.value,
@@ -136,13 +220,29 @@ async def export_spc_chart(
     data_source = db.query(DataSource).filter(DataSource.id == data_source_id).first()
     if not data_source:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    
-    if not data_source.data_values:
-        raise HTTPException(status_code=400, detail="数据源无有效数据")
-    
+
+    # 获取数据值（与 calculate_spc_chart 相同的数据源类型分支逻辑）
+    if data_source.source_type == DataSourceType.FILE:
+        if not data_source.file_path:
+            raise HTTPException(status_code=400, detail="文件数据源未找到文件路径")
+        try:
+            data_values = _parse_file_values(data_source.file_path)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
+        if not data_values:
+            raise HTTPException(status_code=400, detail="文件中未找到有效数值数据")
+    elif data_source.source_type == DataSourceType.SYSTEM:
+        raise HTTPException(status_code=501, detail="系统对接数据源暂不支持")
+    else:
+        if not data_source.data_values:
+            raise HTTPException(status_code=400, detail="数据源无有效数据")
+        data_values = data_source.data_values
+
     # 计算SPC
     result = calculate_spc(
-        data=data_source.data_values,
+        data=data_values,
         chart_type=chart_type,
         subgroup_size=subgroup_size,
         confidence_level=confidence_level
@@ -171,13 +271,29 @@ async def export_raw_data(
     data_source = db.query(DataSource).filter(DataSource.id == data_source_id).first()
     if not data_source:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    
-    if not data_source.data_values:
-        raise HTTPException(status_code=400, detail="数据源无有效数据")
-    
+
+    # 获取数据值（与 calculate_spc_chart 相同的数据源类型分支逻辑）
+    if data_source.source_type == DataSourceType.FILE:
+        if not data_source.file_path:
+            raise HTTPException(status_code=400, detail="文件数据源未找到文件路径")
+        try:
+            data_values = _parse_file_values(data_source.file_path)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
+        if not data_values:
+            raise HTTPException(status_code=400, detail="文件中未找到有效数值数据")
+    elif data_source.source_type == DataSourceType.SYSTEM:
+        raise HTTPException(status_code=501, detail="系统对接数据源暂不支持")
+    else:
+        if not data_source.data_values:
+            raise HTTPException(status_code=400, detail="数据源无有效数据")
+        data_values = data_source.data_values
+
     # 导出Excel
     excel_data = export_service.export_raw_data(
-        data=data_source.data_values,
+        data=data_values,
         data_title=data_source.name
     )
     

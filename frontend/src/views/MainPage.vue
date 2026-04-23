@@ -61,13 +61,14 @@
                     <a-upload
                       :before-upload="handleFileUpload"
                       :file-list="fileList"
+                      :on-remove="handleFileRemove"
                       accept=".xlsx,.xls,.csv"
                     >
                       <a-button>
                         <UploadOutlined /> 选择文件
                       </a-button>
                     </a-upload>
-                    <div class="upload-hint">支持 Excel(.xlsx/.xls) 或 CSV 文件</div>
+                    <div class="upload-hint" v-if="fileList.length === 0">支持 Excel(.xlsx/.xls) 或 CSV 文件</div>
                   </a-form-item>
                 </a-form>
               </div>
@@ -541,10 +542,19 @@ const handleAIAnalysis = async () => {
 };
 
 const handleFileUpload = (file: File) => {
-  fileData.name = file.name.replace(/\.(xlsx|xls|csv)$/i, '');
+  // 仅当数据标题为空时，才自动填入文件名（去掉扩展名）
+  if (!fileData.name) {
+    fileData.name = file.name.replace(/\.(xlsx|xls|csv)$/i, '');
+  }
   fileData.file = file;
   fileList.value = [file as any];
   return false;
+};
+
+const handleFileRemove = () => {
+  fileData.file = null;
+  fileData.name = '';
+  fileList.value = [];
 };
 
 const handleExportChart = () => {

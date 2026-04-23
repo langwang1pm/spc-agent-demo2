@@ -134,19 +134,19 @@ async def upload_file_data(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """上传文件数据（Excel/CSV）"""
+    """上传文件数据（Excel/CSV）——仅保存文件，不解析数据值；SPC计算时实时解析"""
     # 检查文件类型
     if not (file.filename.endswith('.xlsx') or 
             file.filename.endswith('.xls') or 
             file.filename.endswith('.csv')):
         raise HTTPException(status_code=400, detail="只支持Excel(.xlsx/.xls)或CSV文件")
     
-    # 保存文件
+    # 保存文件（仅存储文件，不解析数据值）
     file_path = UPLOAD_DIR / f"{file.filename}"
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # 创建数据源记录
+    # 创建数据源记录（只存文件路径，data_values 留空）
     db_data = DataSource(
         name=name,
         source_type=DataSourceType.FILE,
