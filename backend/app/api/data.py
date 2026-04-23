@@ -1,7 +1,5 @@
-"""
-SPC数据输入相关API
-"""
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List
 from app.core.database import get_db
@@ -15,12 +13,97 @@ from app.schemas import (
 import shutil
 import os
 from pathlib import Path
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 router = APIRouter(prefix="/data", tags=["数据输入"])
 
 # 文件上传目录
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+@router.get("/template", response_class=FileResponse)
+async def download_template():
+    """下载数据导入模板"""
+    from openpyxl.comments import Comment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "检验记录表A"
+
+    # 样式定义
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    label_font = Font(bold=True, size=11)
+    label_fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+    center_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin", color="B4C6E7"),
+        right=Side(style="thin", color="B4C6E7"),
+        top=Side(style="thin", color="B4C6E7"),
+        bottom=Side(style="thin", color="B4C6E7")
+    )
+    placeholder_font = Font(color="BFBFBF", size=10, italic=True)
+
+    NUM_SAMPLES = 6  # B~G列
+    NUM_ITEMS = 6    # 2~7行
+
+    # --- 第1行表头 ---
+    ws.cell(row=1, column=1, value=None)  # A1 空白
+    ws.cell(row=1, column=1).border = thin_border
+
+    for col_idx in range(2, 2 + NUM_SAMPLES):
+        cell = ws.cell(row=1, column=col_idx, value=f"检验样本{col_idx - 1}")
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = thin_border
+
+    # --- A列行标题（检验项）+ 数据区域（浅灰占位文本）---
+    for row_idx in range(2, 2 + NUM_ITEMS):
+        # A列行标题
+        label_cell = ws.cell(row=row_idx, column=1, value=f"检验项{row_idx - 1}")
+        label_cell.font = label_font
+        label_cell.fill = label_fill
+        label_cell.alignment = center_align
+        label_cell.border = thin_border
+
+        # B~G列数据区域：浅灰色占位示例值
+        for col_idx in range(2, 2 + NUM_SAMPLES):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.alignment = center_align
+            cell.border = thin_border
+            # 占位示例值（浅灰色斜体，用户输入时自动替换）
+            sample_val = round(10.0 + (row_idx % 3) * 0.3 - col_idx * 0.1 + (row_idx * col_idx % 5) * 0.05, 2)
+            cell.value = sample_val
+            cell.font = placeholder_font
+            cell.number_format = '0.00'
+
+    # --- 批注说明 ---
+    ws.cell(row=1, column=1).comment = Comment(
+        "行 = 检验项（可向下增行）\n列 = 检验样本（可向右增列）\n数据区域填写数值，缺失值留空即可",
+        "SPC Agent"
+    )
+
+    # --- 列宽 ---
+    ws.column_dimensions['A'].width = 12
+    for col_idx in range(2, 2 + NUM_SAMPLES):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = 14
+
+    # --- 行高 ---
+    ws.row_dimensions[1].height = 24
+    for r in range(2, 2 + NUM_ITEMS):
+        ws.row_dimensions[r].height = 22
+
+    # --- 保存并返回 ---
+    template_path = UPLOAD_DIR / "检验数据模板.xlsx"
+    wb.save(template_path)
+    return FileResponse(
+        path=str(template_path),
+        filename="检验数据模板.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 @router.post("/manual", response_model=ApiResponse)

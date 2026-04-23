@@ -38,11 +38,11 @@
                   <a-form-item label="数据标题">
                     <a-input v-model:value="manualData.name" placeholder="请输入数据标题" />
                   </a-form-item>
-                  <a-form-item label="数据值（每行一组数据，逗号分隔）">
+                  <a-form-item label="数据值">
                     <a-textarea
                       v-model:value="manualData.values"
-                      placeholder="10.2, 10.5, 10.3&#10;10.1, 10.4, 10.2&#10;..."
-                      :rows="6"
+                      placeholder="请输入二维矩阵：行=检验项，列=样本。数值用英文逗号分隔，缺值请留空。&#10;例如:&#10;10.2, 10.5, 10.0, 10.3&#10;10.2, 10.5, , 10.3&#10;10.1, , 10.4, 10.2"
+                      :rows="8"
                     />
                   </a-form-item>
                 </a-form>
@@ -56,7 +56,8 @@
                   <a-form-item label="数据标题">
                     <a-input v-model:value="fileData.name" placeholder="请输入数据标题" />
                   </a-form-item>
-                  <a-form-item label="上传文件">
+                  <a-form-item>
+                    <template #label>上传文件 <a class="template-link" href="/api/data/template" target="_blank">下载模板</a></template>
                     <a-upload
                       :before-upload="handleFileUpload"
                       :file-list="fileList"
@@ -721,6 +722,18 @@ onMounted(() => {
   margin-top: 8px;
   font-size: 12px;
   color: #999;
+}
+
+.template-link {
+  font-size: 13px;
+  font-weight: normal;
+  color: #1677ff;
+  text-decoration: none;
+  margin-left: 8px;
+}
+
+.template-link:hover {
+  text-decoration: underline;
 }
 
 .action-bar {
