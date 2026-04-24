@@ -46,7 +46,7 @@ class ConfidenceLevel(str, Enum):
 class ManualDataInput(BaseModel):
     """手动输入数据"""
     name: str = Field(..., description="数据标题")
-    data_values: List[List[float]] = Field(..., description="数据值，二维数组")
+    data_values: List[float] = Field(..., description="数据值，一维数组")
 
 
 class FileDataInput(BaseModel):

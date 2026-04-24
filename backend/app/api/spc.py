@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from pathlib import Path
-import io, csv
+import io, csv, json
 from openpyxl import load_workbook
 # pandas removed — no longer used
 # import pandas as pd
@@ -17,6 +17,19 @@ from app.schemas import AnalysisConfigCreate, ApiResponse
 from app.services.spc import calculate_spc
 from app.services.ai_agent import get_ai_analysis
 from app.services.export import export_service
+
+
+def _convert_to_2d(data_values: List[float], subgroup_size: int) -> List[List[float]]:
+    """
+    将一维数组按子组大小转换为二维数组。
+    不能整除时，最后一组保留实际数据量（不补NaN，不丢弃）。
+    例如：36个数据，subgroup_size=5 → 8组(5+5+5+5+5+5+5+1)
+    """
+    result = []
+    for i in range(0, len(data_values), subgroup_size):
+        group = data_values[i:i + subgroup_size]
+        result.append(group)
+    return result
 
 
 def _parse_file_values(file_path: str) -> List[List[float]]:
@@ -114,7 +127,15 @@ async def calculate_spc_chart(
         # MANUAL：直接使用存储在 data_values 中的数据
         if not data_source.data_values:
             raise HTTPException(status_code=400, detail="数据源无有效数据")
-        data_values = data_source.data_values
+        # PostgreSQL JSONB 返回的可能是字符串，需解析
+        raw_data = data_source.data_values
+        if isinstance(raw_data, str):
+            raw_data = json.loads(raw_data)
+        # 检测数据维度：一维数组需转换为二维
+        if isinstance(raw_data[0], (int, float)):
+            data_values = _convert_to_2d(raw_data, subgroup_size)
+        else:
+            data_values = raw_data  # 已是二维数组，直接使用
 
     # 执行SPC计算
     result = calculate_spc(
@@ -171,7 +192,13 @@ async def analyze_with_ai(
             # TODO(系统对接)
             pass
         else:
-            data_values = data_source.data_values
+            raw_data = data_source.data_values
+            if isinstance(raw_data, str):
+                raw_data = json.loads(raw_data)
+            if raw_data and isinstance(raw_data[0], (int, float)):
+                data_values = _convert_to_2d(raw_data, analysis_config.subgroup_size)
+            else:
+                data_values = raw_data
 
         if data_values and analysis_config:
             spc_result = calculate_spc(
@@ -238,7 +265,13 @@ async def export_spc_chart(
     else:
         if not data_source.data_values:
             raise HTTPException(status_code=400, detail="数据源无有效数据")
-        data_values = data_source.data_values
+        raw_data = data_source.data_values
+        if isinstance(raw_data, str):
+            raw_data = json.loads(raw_data)
+        if isinstance(raw_data[0], (int, float)):
+            data_values = _convert_to_2d(raw_data, subgroup_size)
+        else:
+            data_values = raw_data
 
     # 计算SPC
     result = calculate_spc(

@@ -132,7 +132,8 @@
               </a-select>
             </a-form-item>
             <a-form-item label="子组大小">
-              <a-input-number v-model:value="analysisConfig.subgroupSize" :min="1" :max="100" :disabled="!hasData" />
+              <a-input-number v-model:value="analysisConfig.subgroupSize" :min="1" :max="100" :disabled="!hasData || subgroupSizeLocked" />
+              <div v-if="subgroupSizeLocked" class="locked-hint">已从文件解析，不可修改</div>
             </a-form-item>
             <a-form-item label="置信水平">
               <a-select v-model:value="analysisConfig.confidenceLevel" :disabled="!hasData">
@@ -352,6 +353,9 @@ const analysisConfig = reactive({
   showPrediction: false,
 });
 
+// 子组大小是否被锁定（从文件解析后禁止编辑）
+const subgroupSizeLocked = ref(false);
+
 // 图表类型选项
 const chartTypeOptions = [
   { value: 'xbar_r', label: 'X̄-R 控制图（均值-极差）' },
@@ -382,22 +386,38 @@ const rawDataColumns = [
 // 原始数据源
 const rawDataSource = computed(() => {
   if (!store.currentDataSource?.data_values) return [];
-  const result: { index: number; group: number; value: number }[] = [];
-  let idx = 1;
-  store.currentDataSource.data_values.forEach((group, gi) => {
-    group.forEach((val) => {
-      result.push({ index: idx++, group: gi + 1, value: val });
+  const values = store.currentDataSource.data_values;
+  // 支持一维数组和二维数组
+  if (values.length > 0 && typeof values[0] === 'number') {
+    // 一维数组
+    return values.map((val, idx) => ({ index: idx + 1, group: 1, value: val }));
+  } else {
+    // 二维数组
+    const result: { index: number; group: number; value: number }[] = [];
+    let idx = 1;
+    values.forEach((group, gi) => {
+      (group as number[]).forEach((val) => {
+        result.push({ index: idx++, group: gi + 1, value: val });
+      });
     });
-  });
-  return result;
+    return result;
+  }
 });
 
 // 方法
-const parseDataValues = (text: string): number[][] => {
+const parseDataValues = (text: string): number[] => {
+  // 将所有数值解析为一维数组（按行顺序）
   const lines = text.trim().split('\n').filter(line => line.trim());
-  return lines.map(line => 
-    line.split(/[,，\t]+/).map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
-  );
+  const result: number[] = [];
+  lines.forEach(line => {
+    line.split(/[,，\t]+/).forEach(v => {
+      const num = parseFloat(v.trim());
+      if (!isNaN(num)) {
+        result.push(num);
+      }
+    });
+  });
+  return result;
 };
 
 const handleAddData = async () => {
@@ -411,13 +431,15 @@ const handleAddData = async () => {
         return;
       }
       const dataValues = parseDataValues(manualData.values);
-      if (dataValues.length === 0 || dataValues.every(g => g.length === 0)) {
+      if (dataValues.length === 0) {
         message.warning('请输入有效的数据');
         return;
       }
       
       const res = await createManualData({ name: manualData.name, data_values: dataValues });
       dataSourceId = res.data.id;
+      // 手动输入时，解锁子组大小字段
+      subgroupSizeLocked.value = false;
     } else if (dataInputTab.value === 'file') {
       if (!fileData.name) {
         message.warning('请输入数据标题');
@@ -430,6 +452,12 @@ const handleAddData = async () => {
       
       const res = await uploadFileData(fileData.name, fileData.file);
       dataSourceId = res.data.id;
+      
+      // 从文件解析的子组大小，更新配置并锁定
+      if (res.data.subgroup_size && res.data.subgroup_size > 0) {
+        analysisConfig.subgroupSize = res.data.subgroup_size;
+        subgroupSizeLocked.value = true;
+      }
     } else {
       message.info('系统对接功能开发中');
       loading.value = false;
@@ -754,6 +782,12 @@ onMounted(() => {
 
 .action-bar button {
   width: 100%;
+}
+
+.locked-hint {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
 }
 
 .chart-content {

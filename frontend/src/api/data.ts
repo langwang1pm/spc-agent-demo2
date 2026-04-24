@@ -18,7 +18,7 @@ export const uploadFileData = (name: string, file: File) => {
   formData.append('name', name);
   formData.append('file', file);
   
-  return api.post<ApiResponse<{ id: number; name: string; file_name: string }>>(
+  return api.post<ApiResponse<{ id: number; name: string; file_name: string; subgroup_size?: number }>>(
     '/data/file',
     formData,
     {

@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+from pathlib import Path
 from sqlalchemy.orm import Session
 from typing import List
 from app.core.database import get_db
@@ -23,7 +25,36 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-@router.get("/template", response_class=FileResponse)
+def _parse_subgroup_size(file_path: Path, filename: str) -> int:
+    """解析文件，获取子组大小（每行的数据列数）
+    
+    模板结构：A列是标签（子组1、子组2...），B~是数据列
+    子组大小 = 数据列数 = 总列数 - 1
+    """
+    if filename.endswith('.csv'):
+        import csv
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            header = next(reader, [])
+            return max(0, len(header) - 1)  # 减去A列标签
+    else:
+        # Excel 文件
+        from openpyxl import load_workbook
+        wb = load_workbook(str(file_path), read_only=True, data_only=True)
+        ws = wb.active
+        # 计算实际使用的列数
+        max_col = ws.max_column
+        # 查找第一行有多少个非空单元格
+        header_count = 0
+        for col in range(1, max_col + 1):
+            if ws.cell(row=1, column=col).value is not None:
+                header_count += 1
+        wb.close()
+        # 子组大小 = 总列数 - 1（A列是标签）
+        return max(0, header_count - 1)
+
+
+@router.get("/template")
 async def download_template():
     """下载数据导入模板"""
     from openpyxl.comments import Comment
@@ -60,10 +91,10 @@ async def download_template():
         cell.alignment = center_align
         cell.border = thin_border
 
-    # --- A列行标题（检验项）+ 数据区域（浅灰占位文本）---
+    # --- A列行标题（子组）+ 数据区域（浅灰占位文本）---
     for row_idx in range(2, 2 + NUM_ITEMS):
         # A列行标题
-        label_cell = ws.cell(row=row_idx, column=1, value=f"检验项{row_idx - 1}")
+        label_cell = ws.cell(row=row_idx, column=1, value=f"子组{row_idx - 1}")
         label_cell.font = label_font
         label_cell.fill = label_fill
         label_cell.alignment = center_align
@@ -82,7 +113,7 @@ async def download_template():
 
     # --- 批注说明 ---
     ws.cell(row=1, column=1).comment = Comment(
-        "行 = 检验项（可向下增行）\n列 = 检验样本（可向右增列）\n数据区域填写数值，缺失值留空即可",
+        "行 = 子组（可向下增行）\n列 = 检验样本（可向右增列）\n数据区域填写数值，缺失值留空即可",
         "SPC Agent"
     )
 
@@ -96,14 +127,25 @@ async def download_template():
     for r in range(2, 2 + NUM_ITEMS):
         ws.row_dimensions[r].height = 22
 
-    # --- 保存并返回 ---
-    template_path = UPLOAD_DIR / "检验数据模板.xlsx"
-    wb.save(template_path)
+    # --- 保存到内存 buffer 并直接返回 ---
+    import io
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    import tempfile, os
+    fd, tmp_path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    with open(tmp_path, 'wb') as f:
+        f.write(buffer.getvalue())
+
     return FileResponse(
-        path=str(template_path),
+        path=tmp_path,
         filename="检验数据模板.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(lambda p=tmp_path: Path(p).unlink(missing_ok=True))
     )
+
 
 
 @router.post("/manual", response_model=ApiResponse)
@@ -134,19 +176,27 @@ async def upload_file_data(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """上传文件数据（Excel/CSV）——仅保存文件，不解析数据值；SPC计算时实时解析"""
+    """上传文件数据（Excel/CSV）——保存文件并解析子组大小"""
     # 检查文件类型
     if not (file.filename.endswith('.xlsx') or 
             file.filename.endswith('.xls') or 
             file.filename.endswith('.csv')):
         raise HTTPException(status_code=400, detail="只支持Excel(.xlsx/.xls)或CSV文件")
     
-    # 保存文件（仅存储文件，不解析数据值）
+    # 保存文件
     file_path = UPLOAD_DIR / f"{file.filename}"
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # 创建数据源记录（只存文件路径，data_values 留空）
+    # 解析文件获取子组大小
+    subgroup_size = None
+    try:
+        subgroup_size = _parse_subgroup_size(file_path, file.filename)
+    except Exception as e:
+        # 解析失败不影响上传，子组大小为 None
+        print(f"解析子组大小失败: {e}")
+    
+    # 创建数据源记录
     db_data = DataSource(
         name=name,
         source_type=DataSourceType.FILE,
@@ -160,7 +210,12 @@ async def upload_file_data(
     return ApiResponse(
         success=True,
         message="文件上传成功",
-        data={"id": db_data.id, "name": db_data.name, "file_name": file.filename}
+        data={
+            "id": db_data.id, 
+            "name": db_data.name, 
+            "file_name": file.filename,
+            "subgroup_size": subgroup_size
+        }
     )
 
 
