@@ -138,6 +138,13 @@ class AIAnalysisService:
         anomalies = spc_result.get("anomalies", []) if spc_result else []
         has_anomaly = len(anomalies) > 0
         
+        def fmt(val, precision=4):
+            """安全格式化数值，非数字时返回 N/A"""
+            try:
+                return f"{float(val):.{precision}f}"
+            except (TypeError, ValueError):
+                return 'N/A'
+
         analysis = f"""# SPC智能分析报告
 
 ## 📊 过程概况
@@ -145,11 +152,11 @@ class AIAnalysisService:
 | 指标 | 数值 |
 |------|------|
 | 样本数 | {stats.get('sample_count', 'N/A')} |
-| 均值 | {stats.get('mean', 'N/A'):.4f} |
-| 标准差 | {stats.get('std_dev', 'N/A'):.4f} |
-| 变异系数 | {stats.get('cv', 'N/A'):.2f}% |
-| 最小值 | {stats.get('min_val', 'N/A'):.4f} |
-| 最大值 | {stats.get('max_val', 'N/A'):.4f} |
+| 均值 | {fmt(stats.get('mean'))} |
+| 标准差 | {fmt(stats.get('std_dev'))} |
+| 变异系数 | {fmt(stats.get('cv'), 2)}% |
+| 最小值 | {fmt(stats.get('min_val'))} |
+| 最大值 | {fmt(stats.get('max_val'))} |
 
 ## 🔍 稳定性评估
 

@@ -41,7 +41,7 @@
                   <a-form-item label="数据值">
                     <a-textarea
                       v-model:value="manualData.values"
-                      placeholder="请输入二维矩阵：行=检验项，列=样本。数值用英文逗号分隔，缺值请留空。&#10;例如:&#10;10.2, 10.5, 10.0, 10.3&#10;10.2, 10.5, , 10.3&#10;10.1, , 10.4, 10.2"
+                      placeholder="请输入要分析的数据值，数值之间用英文逗号分隔。&#10;例如:&#10;10.2,10.5,10.0,10.3,10.2,10.5,10.3,10.1,10.4,10.2"
                       :rows="8"
                     />
                   </a-form-item>
@@ -305,7 +305,7 @@ import {
 import * as echarts from 'echarts';
 import type { UploadFile } from 'ant-design-vue';
 import { useAppStore } from '@/stores/app';
-import { createManualData, uploadFileData } from '@/api/data';
+import { createManualData, uploadFileData, getDataSource } from '@/api/data';
 import { calculateSPC, analyzeWithAI } from '@/api/spc';
 import MonitorCenterModal from '@/components/MonitorCenterModal.vue';
 import HelpModal from '@/components/HelpModal.vue';
@@ -465,10 +465,16 @@ const handleAddData = async () => {
     }
     
     store.setDataAdded(true);
-    store.setDataSource({ id: dataSourceId, name: manualData.name || fileData.name, source_type: 'manual', data_values: parseDataValues(manualData.values), created_at: new Date().toISOString() } as any);
+    
+    // 获取完整数据源（包含 data_values）
+    const fullDataRes = await getDataSource(dataSourceId);
+    store.setDataSource(fullDataRes.data);
     
     // 自动触发SPC计算
     await performSPCAnalysis(dataSourceId);
+    
+    // 自动触发AI分析
+    await performAIAnalysis(dataSourceId);
     
     message.success('数据添加成功');
   } catch (error) {
@@ -496,6 +502,16 @@ const performSPCAnalysis = async (dataSourceId: number) => {
   } catch (error) {
     message.error('SPC计算失败');
     console.error(error);
+  }
+};
+
+const performAIAnalysis = async (dataSourceId: number) => {
+  try {
+    const res = await analyzeWithAI(dataSourceId);
+    store.setAIAnalysisResult(res.data.analysis_result);
+  } catch (error) {
+    console.error('AI分析失败:', error);
+    // AI分析失败不阻断主流程，静默处理
   }
 };
 
@@ -688,7 +704,7 @@ onMounted(() => {
   grid-template-rows: auto 1fr auto;
   gap: 16px;
   padding: 16px;
-  height: calc(100vh - 68px);
+  min-height: calc(100vh - 68px); /* 改为 min-height，允许随内容撑开 */
 }
 
 .panel {
@@ -745,7 +761,13 @@ onMounted(() => {
 .raw-data-panel {
   grid-column: 1 / 3;
   grid-row: 3 / 4;
-  max-height: 200px;
+  /* 最小高度，允许随内容撑开 */
+  min-height: 400px;
+}
+
+.raw-data-panel .panel-content {
+  overflow: visible;
+  /* 不设置固定高度，让内容自然撑开 */
 }
 
 .ai-analysis-panel {
