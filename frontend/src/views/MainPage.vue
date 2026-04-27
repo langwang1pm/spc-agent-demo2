@@ -389,8 +389,17 @@ const rawDataSource = computed(() => {
   const values = store.currentDataSource.data_values;
   // 支持一维数组和二维数组
   if (values.length > 0 && typeof values[0] === 'number') {
-    // 一维数组
-    return values.map((val, idx) => ({ index: idx + 1, group: 1, value: val }));
+    // 一维数组 → 按子组大小拆分为二维
+    const subgroupSize = analysisConfig.subgroupSize;
+    const result: { index: number; group: number; value: number }[] = [];
+    let idx = 1;
+    for (let i = 0; i < values.length; i += subgroupSize) {
+      const groupNum = Math.floor(i / subgroupSize) + 1;
+      for (let j = 0; j < subgroupSize && i + j < values.length; j++) {
+        result.push({ index: idx++, group: groupNum, value: values[i + j] });
+      }
+    }
+    return result;
   } else {
     // 二维数组
     const result: { index: number; group: number; value: number }[] = [];

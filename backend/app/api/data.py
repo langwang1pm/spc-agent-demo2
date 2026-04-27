@@ -26,10 +26,10 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 def _parse_subgroup_size(file_path: Path, filename: str) -> int:
-    """解析文件，获取子组大小（每行的数据列数）
+    """解析文件，获取子组大小。
     
-    模板结构：A列是标签（子组1、子组2...），B~是数据列
-    子组大小 = 数据列数 = 总列数 - 1
+    模板结构：A列是子组标签（子组1~），B~列是检验样本数据。
+    子组大小 = 总列数 - 1（A列是标签）。
     """
     if filename.endswith('.csv'):
         import csv
@@ -42,16 +42,51 @@ def _parse_subgroup_size(file_path: Path, filename: str) -> int:
         from openpyxl import load_workbook
         wb = load_workbook(str(file_path), read_only=True, data_only=True)
         ws = wb.active
-        # 计算实际使用的列数
         max_col = ws.max_column
-        # 查找第一行有多少个非空单元格
-        header_count = 0
-        for col in range(1, max_col + 1):
-            if ws.cell(row=1, column=col).value is not None:
-                header_count += 1
         wb.close()
-        # 子组大小 = 总列数 - 1（A列是标签）
-        return max(0, header_count - 1)
+        # 子组大小 = 总列数 - 1（A列是子组标签）
+        return max(0, max_col - 1)
+
+
+def _parse_file_data(file_path: Path, filename: str) -> List[float]:
+    """解析上传的文件，提取所有数据值，返回一维数组。
+    
+    模板结构：第1行是表头，A列是子组标签，B~列是检验样本数据。
+    数据从第2行开始（A列为标签，B~列为数据），按行展开为一维数组。
+    """
+    values: List[float] = []
+    if filename.endswith('.csv'):
+        import csv
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            next(reader, None)  # 跳过表头
+            for row in reader:
+                # 从第2列开始（A列是标签）
+                for cell in row[1:]:
+                    cell = cell.strip()
+                    if cell:
+                        try:
+                            values.append(float(cell))
+                        except ValueError:
+                            pass
+    else:
+        # Excel 文件
+        from openpyxl import load_workbook
+        wb = load_workbook(str(file_path), read_only=True, data_only=True)
+        ws = wb.active
+        max_row = ws.max_row
+        max_col = ws.max_column
+        # 数据从第2行开始（第1行是表头），从第2列开始（A列是标签）
+        for row_idx in range(2, max_row + 1):
+            for col_idx in range(2, max_col + 1):
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                if cell_value is not None:
+                    try:
+                        values.append(float(cell_value))
+                    except (ValueError, TypeError):
+                        pass
+        wb.close()
+    return values
 
 
 @router.get("/template")
@@ -188,20 +223,22 @@ async def upload_file_data(
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # 解析文件获取子组大小
-    subgroup_size = None
+    # 解析文件获取子组大小和数据值
+    subgroup_size: int | None = None
+    data_values: List[float] | None = None
     try:
         subgroup_size = _parse_subgroup_size(file_path, file.filename)
+        data_values = _parse_file_data(file_path, file.filename)
     except Exception as e:
-        # 解析失败不影响上传，子组大小为 None
-        print(f"解析子组大小失败: {e}")
+        print(f"解析文件失败: {e}")
     
     # 创建数据源记录
     db_data = DataSource(
         name=name,
         source_type=DataSourceType.FILE,
         file_name=file.filename,
-        file_path=str(file_path)
+        file_path=str(file_path),
+        data_values=data_values
     )
     db.add(db_data)
     db.commit()
