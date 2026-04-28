@@ -2,7 +2,7 @@
 Pydantic数据模型（Schemas）
 用于API请求/响应的数据验证
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -71,8 +71,17 @@ class DataSourceCreate(BaseModel):
     file_name: Optional[str] = None
     file_path: Optional[str] = None
     system_type: Optional[SystemSourceType] = None
-    connection_config: Optional[Dict[str, Any]] = None
+    connection_config: Optional[Any] = Field(None, description="连接配置，可为对象或JSON字符串")
     query_config: Optional[str] = None
+
+    @field_validator('connection_config', mode='before')
+    @classmethod
+    def parse_connection_config(cls, v):
+        """支持传入字符串（JSON）或对象，自动解析"""
+        if isinstance(v, str):
+            import json
+            return json.loads(v)
+        return v
 
 
 class DataSourceResponse(BaseModel):

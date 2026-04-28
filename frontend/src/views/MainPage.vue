@@ -83,24 +83,24 @@
                   </a-form-item>
                   <a-form-item label="数据源类型">
                     <a-select v-model:value="systemData.sourceType" placeholder="请选择数据源类型">
+                      <a-select-option value="DATABASE">数据库</a-select-option>
                       <a-select-option value="ERP">ERP</a-select-option>
                       <a-select-option value="MES">MES</a-select-option>
                       <a-select-option value="PLC">PLC设备</a-select-option>
-                      <a-select-option value="DATABASE">数据库</a-select-option>
                     </a-select>
                   </a-form-item>
                   <a-form-item label="连接配置">
                     <a-textarea
                       v-model:value="systemData.connectionConfig"
-                      placeholder='{"host": "localhost", "port": 3306, ...}'
-                      :rows="3"
+                      :rows="4"
+                      placeholder='{"DB_type": "postgresql", "host": "sh-postgres-h3849b66.sql.tencentcdb.com", "port": 21656, "dbname": "icoastline", "user": "xxx", "password": "***"}'
                     />
                   </a-form-item>
                   <a-form-item label="数据查询">
                     <a-textarea
                       v-model:value="systemData.queryConfig"
-                      placeholder="SELECT * FROM production_data"
-                      :rows="2"
+                      :rows="3"
+                      placeholder="select measure_value_a from table_name_A a where a.inspection_type = 'IQC' limit 100;"
                     />
                   </a-form-item>
                 </a-form>
@@ -305,7 +305,7 @@ import {
 import * as echarts from 'echarts';
 import type { UploadFile } from 'ant-design-vue';
 import { useAppStore } from '@/stores/app';
-import { createManualData, uploadFileData, getDataSource } from '@/api/data';
+import { createManualData, uploadFileData, createSystemData, getDataSource } from '@/api/data';
 import { calculateSPC, analyzeWithAI } from '@/api/spc';
 import MonitorCenterModal from '@/components/MonitorCenterModal.vue';
 import HelpModal from '@/components/HelpModal.vue';
@@ -468,9 +468,39 @@ const handleAddData = async () => {
         subgroupSizeLocked.value = true;
       }
     } else {
-      message.info('系统对接功能开发中');
-      loading.value = false;
-      return;
+      // 系统对接
+      if (!systemData.name) {
+        message.warning('请输入数据标题');
+        loading.value = false;
+        return;
+      }
+      if (!systemData.connectionConfig) {
+        message.warning('请填写连接配置');
+        loading.value = false;
+        return;
+      }
+      if (!systemData.queryConfig) {
+        message.warning('请填写数据查询语句');
+        loading.value = false;
+        return;
+      }
+      let res;
+      try {
+        res = await createSystemData({
+          name: systemData.name,
+          system_type: systemData.sourceType,
+          connection_config: systemData.connectionConfig.trim(),
+          query_config: systemData.queryConfig,
+        });
+      } catch (error: any) {
+        const errMsg = error?.response?.data?.detail || '数据源保存失败，所选数据源对应功能暂未开发，敬请期待。';
+        message.error(errMsg);
+        loading.value = false;
+        return;
+      }
+      dataSourceId = res.data.id;
+      // 系统对接数据，解锁子组大小
+      subgroupSizeLocked.value = false;
     }
     
     store.setDataAdded(true);

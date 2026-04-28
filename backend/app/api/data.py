@@ -265,6 +265,13 @@ async def create_system_data(
     if data.source_type != DataSourceType.SYSTEM:
         raise HTTPException(status_code=400, detail="数据源类型必须为system")
     
+    # 2.1 判定数据源类型是否为"数据库"，否则提示功能未开发
+    if data.system_type != SystemSourceType.DATABASE:
+        raise HTTPException(
+            status_code=400,
+            detail="相关功能暂未开发，敬请期待"
+        )
+    
     db_data = DataSource(
         name=data.name,
         source_type=DataSourceType.SYSTEM,
