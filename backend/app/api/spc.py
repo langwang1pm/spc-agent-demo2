@@ -17,6 +17,7 @@ from app.schemas import AnalysisConfigCreate, ApiResponse
 from app.services.spc import calculate_spc
 from app.services.ai_agent import get_ai_analysis
 from app.services.export import export_service
+from app.services.system_query import get_system_data_values, SystemQueryError
 
 
 def _convert_to_2d(data_values: List[float], subgroup_size: int) -> List[List[float]]:
@@ -30,6 +31,71 @@ def _convert_to_2d(data_values: List[float], subgroup_size: int) -> List[List[fl
         group = data_values[i:i + subgroup_size]
         result.append(group)
     return result
+
+
+def _get_data_values_from_source(
+    data_source: DataSource,
+    subgroup_size: int = 5
+) -> List[List[float]]:
+    """
+    从数据源获取数据值（统一处理三种数据源类型）
+    
+    Args:
+        data_source: 数据源对象
+        subgroup_size: 子组大小（用于一维转二维）
+        
+    Returns:
+        二维数据数组
+        
+    Raises:
+        HTTPException: 数据获取失败时抛出
+    """
+    if data_source.source_type == DataSourceType.FILE:
+        if not data_source.file_path:
+            raise HTTPException(status_code=400, detail="文件数据源未找到文件路径")
+        try:
+            return _parse_file_values(data_source.file_path)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
+    
+    elif data_source.source_type == DataSourceType.SYSTEM:
+        # 系统对接数据源
+        if not data_source.system_type:
+            raise HTTPException(status_code=400, detail="系统对接数据源未指定系统类型")
+        if not data_source.connection_config:
+            raise HTTPException(status_code=400, detail="系统对接数据源未配置连接信息")
+        if not data_source.query_config:
+            raise HTTPException(status_code=400, detail="系统对接数据源未配置查询语句")
+        
+        try:
+            # 从外部系统查询数据
+            raw_values = get_system_data_values(
+                system_type=data_source.system_type.value,
+                connection_config=data_source.connection_config,
+                query_config=data_source.query_config
+            )
+            # 将一维数组转换为二维数组（按子组大小分组）
+            return _convert_to_2d(raw_values, subgroup_size)
+        except SystemQueryError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"系统数据查询失败: {str(e)}")
+    
+    else:
+        # MANUAL：直接使用存储在 data_values 中的数据
+        if not data_source.data_values:
+            raise HTTPException(status_code=400, detail="数据源无有效数据")
+        # PostgreSQL JSONB 返回的可能是字符串，需解析
+        raw_data = data_source.data_values
+        if isinstance(raw_data, str):
+            raw_data = json.loads(raw_data)
+        # 检测数据维度：
+        if isinstance(raw_data[0], (int, float)):
+            return _convert_to_2d(raw_data, subgroup_size)
+        else:
+            return raw_data  # 已是二维数组，直接使用
 
 
 def _parse_file_values(file_path: str) -> List[List[float]]:
@@ -109,33 +175,9 @@ async def calculate_spc_chart(
         raise HTTPException(status_code=404, detail="数据源不存在")
 
     # 根据数据源类型获取数据值
-    if data_source.source_type == DataSourceType.FILE:
-        if not data_source.file_path:
-            raise HTTPException(status_code=400, detail="文件数据源未找到文件路径")
-        try:
-            data_values = _parse_file_values(data_source.file_path)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
-        if not data_values:
-            raise HTTPException(status_code=400, detail="文件中未找到有效数值数据")
-    elif data_source.source_type == DataSourceType.SYSTEM:
-        # TODO(系统对接): 根据 connection_config / query_config 查询外部数据源
-        raise HTTPException(status_code=501, detail="系统对接数据源暂不支持")
-    else:
-        # MANUAL：直接使用存储在 data_values 中的数据
-        if not data_source.data_values:
-            raise HTTPException(status_code=400, detail="数据源无有效数据")
-        # PostgreSQL JSONB 返回的可能是字符串，需解析
-        raw_data = data_source.data_values
-        if isinstance(raw_data, str):
-            raw_data = json.loads(raw_data)
-        # 检测数据维度：一维数组需转换为二维
-        if isinstance(raw_data[0], (int, float)):
-            data_values = _convert_to_2d(raw_data, subgroup_size)
-        else:
-            data_values = raw_data  # 已是二维数组，直接使用
+    data_values = _get_data_values_from_source(data_source, subgroup_size)
+    if not data_values:
+        raise HTTPException(status_code=400, detail="数据源中未找到有效数值数据")
 
     # 执行SPC计算
     result = calculate_spc(
@@ -153,6 +195,7 @@ async def calculate_spc_chart(
         data={
             "chart_type": result["chart_type"],
             "chart_data": result["chart_data"],
+            "data_values": result["data_values"],
             "statistics": result["statistics"],
             "control_limits": result["control_limits"],
             "anomalies": result["anomalies"],
@@ -181,24 +224,11 @@ async def analyze_with_ai(
             AnalysisConfig.id == analysis_config_id
         ).first()
 
-        # 获取数据值（与 calculate_spc_chart 相同的数据源类型分支逻辑）
-        if data_source.source_type == DataSourceType.FILE:
-            if data_source.file_path:
-                try:
-                    data_values = _parse_file_values(data_source.file_path)
-                except Exception:
-                    data_values = None
-        elif data_source.source_type == DataSourceType.SYSTEM:
-            # TODO(系统对接)
-            pass
-        else:
-            raw_data = data_source.data_values
-            if isinstance(raw_data, str):
-                raw_data = json.loads(raw_data)
-            if raw_data and isinstance(raw_data[0], (int, float)):
-                data_values = _convert_to_2d(raw_data, analysis_config.subgroup_size)
-            else:
-                data_values = raw_data
+        # 获取数据值
+        try:
+            data_values = _get_data_values_from_source(data_source, analysis_config.subgroup_size)
+        except HTTPException:
+            data_values = None
 
         if data_values and analysis_config:
             spc_result = calculate_spc(
@@ -248,30 +278,10 @@ async def export_spc_chart(
     if not data_source:
         raise HTTPException(status_code=404, detail="数据源不存在")
 
-    # 获取数据值（与 calculate_spc_chart 相同的数据源类型分支逻辑）
-    if data_source.source_type == DataSourceType.FILE:
-        if not data_source.file_path:
-            raise HTTPException(status_code=400, detail="文件数据源未找到文件路径")
-        try:
-            data_values = _parse_file_values(data_source.file_path)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
-        if not data_values:
-            raise HTTPException(status_code=400, detail="文件中未找到有效数值数据")
-    elif data_source.source_type == DataSourceType.SYSTEM:
-        raise HTTPException(status_code=501, detail="系统对接数据源暂不支持")
-    else:
-        if not data_source.data_values:
-            raise HTTPException(status_code=400, detail="数据源无有效数据")
-        raw_data = data_source.data_values
-        if isinstance(raw_data, str):
-            raw_data = json.loads(raw_data)
-        if isinstance(raw_data[0], (int, float)):
-            data_values = _convert_to_2d(raw_data, subgroup_size)
-        else:
-            data_values = raw_data
+    # 获取数据值
+    data_values = _get_data_values_from_source(data_source, subgroup_size)
+    if not data_values:
+        raise HTTPException(status_code=400, detail="数据源中未找到有效数值数据")
 
     # 计算SPC
     result = calculate_spc(
@@ -305,24 +315,10 @@ async def export_raw_data(
     if not data_source:
         raise HTTPException(status_code=404, detail="数据源不存在")
 
-    # 获取数据值（与 calculate_spc_chart 相同的数据源类型分支逻辑）
-    if data_source.source_type == DataSourceType.FILE:
-        if not data_source.file_path:
-            raise HTTPException(status_code=400, detail="文件数据源未找到文件路径")
-        try:
-            data_values = _parse_file_values(data_source.file_path)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
-        if not data_values:
-            raise HTTPException(status_code=400, detail="文件中未找到有效数值数据")
-    elif data_source.source_type == DataSourceType.SYSTEM:
-        raise HTTPException(status_code=501, detail="系统对接数据源暂不支持")
-    else:
-        if not data_source.data_values:
-            raise HTTPException(status_code=400, detail="数据源无有效数据")
-        data_values = data_source.data_values
+    # 获取数据值
+    data_values = _get_data_values_from_source(data_source, subgroup_size=5)
+    if not data_values:
+        raise HTTPException(status_code=400, detail="数据源中未找到有效数值数据")
 
     # 导出Excel
     excel_data = export_service.export_raw_data(

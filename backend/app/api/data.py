@@ -237,8 +237,7 @@ async def upload_file_data(
         name=name,
         source_type=DataSourceType.FILE,
         file_name=file.filename,
-        file_path=str(file_path),
-        data_values=data_values
+        file_path=str(file_path)
     )
     db.add(db_data)
     db.commit()

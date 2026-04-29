@@ -385,8 +385,9 @@ const rawDataColumns = [
 
 // 原始数据源
 const rawDataSource = computed(() => {
-  if (!store.currentDataSource?.data_values) return [];
-  const values = store.currentDataSource.data_values;
+  // 优先从 SPC 计算结果中取原始分组数据（三种数据源类型通用）
+  const values = store.spcResult?.data_values || store.currentDataSource?.data_values;
+  if (!values) return [];
   // 支持一维数组和二维数组
   if (values.length > 0 && typeof values[0] === 'number') {
     // 一维数组 → 按子组大小拆分为二维

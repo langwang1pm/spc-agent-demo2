@@ -846,6 +846,7 @@ def calculate_spc(data: List[List[float]], chart_type: str = "xbar_r",
     return {
         "chart_type": result.chart_type,
         "chart_data": result.chart_data,
+        "data_values": data,  # 原始分组数据，供前端展示
         "statistics": result.statistics,
         "control_limits": result.control_limits,
         "anomalies": result.anomalies,

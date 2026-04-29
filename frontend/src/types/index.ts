@@ -78,6 +78,7 @@ export interface SPCChartData {
 export interface SPCResult {
   chart_type: ChartType;
   chart_data: Record<string, SPCChartData>;
+  data_values?: number[][];  // 原始分组数据，供前端展示
   statistics: StatisticsResult;
   control_limits: Record<string, number>;
   anomalies: Anomaly[];
