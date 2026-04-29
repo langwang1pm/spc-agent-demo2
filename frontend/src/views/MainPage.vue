@@ -165,7 +165,12 @@
               <template #icon><FullscreenIcon /></template>
               全屏
             </a-button>
-            <a-button type="primary" @click="handleCreateMonitor" :disabled="!hasData">
+            <a-button 
+              v-if="showMonitorButton" 
+              type="primary" 
+              @click="handleCreateMonitor" 
+              :disabled="!hasData"
+            >
               <template #icon><MonitorIcon /></template>
               监控
             </a-button>
@@ -375,6 +380,12 @@ const hasSPCResult = computed(() => store.spcResult !== null);
 const decimalPlaces = computed(() => store.systemSettings.decimal_places);
 const spcStatistics = computed(() => store.spcResult?.statistics || {});
 const aiAnalysisResult = computed(() => store.aiAnalysisResult);
+
+// 仅系统对接数据源显示监控按钮
+const showMonitorButton = computed(() => {
+  const sourceType = store.currentDataSource?.source_type;
+  return sourceType === 'system';
+});
 
 // 原始数据列
 const rawDataColumns = [
