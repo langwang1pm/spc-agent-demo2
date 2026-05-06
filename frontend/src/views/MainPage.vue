@@ -148,23 +148,6 @@
             <a-form-item label="显示预测区间">
               <a-switch v-model:checked="analysisConfig.showPrediction" :disabled="!hasData" />
             </a-form-item>
-            <!-- 系统对接数据源的自动刷新配置 -->
-            <a-divider v-if="dataInputTab === 'system'" />
-            <a-form-item v-if="dataInputTab === 'system'" label="自动刷新">
-              <a-switch v-model:checked="analysisConfig.autoRefresh" :disabled="!hasData" />
-              <span v-if="store.isAutoRefreshActive()" class="refresh-status running"> ● 运行中</span>
-              <span v-else-if="hasData && analysisConfig.autoRefresh" class="refresh-status stopped"> ● 已停止</span>
-            </a-form-item>
-            <a-form-item v-if="dataInputTab === 'system' && analysisConfig.autoRefresh" label="刷新间隔(秒)">
-              <a-input-number 
-                v-model:value="analysisConfig.refreshInterval" 
-                :min="10" 
-                :max="3600" 
-                :step="10"
-                :disabled="!hasData"
-              />
-              <div class="refresh-hint">范围: 10-3600秒</div>
-            </a-form-item>
           </a-form>
         </div>
       </section>
@@ -304,6 +287,20 @@
     <!-- 监控中心弹窗 -->
     <MonitorCenterModal v-model:visible="showMonitorCenter" />
 
+    <!-- 创建监控任务弹窗 -->
+    <CreateMonitorModal
+      v-model:visible="showCreateMonitor"
+      :dataSourceId="store.currentDataSource?.id"
+      :dataSourceName="store.currentDataSource?.name"
+      :sourceType="store.currentDataSource?.system_type || store.currentDataSource?.source_type || ''"
+      :connectionConfig="store.currentDataSource?.connection_config || null"
+      :queryConfig="store.currentDataSource?.query_config || ''"
+      :chartType="analysisConfig.chartType"
+      :subgroupSize="analysisConfig.subgroupSize"
+      :confidenceLevel="analysisConfig.confidenceLevel"
+      @success="() => { showMonitorCenter = true }"
+    />
+
     <!-- 帮助弹窗 -->
     <HelpModal v-model:visible="showHelp" />
 
@@ -330,6 +327,7 @@ import { useAppStore } from '@/stores/app';
 import { createManualData, uploadFileData, createSystemData, getDataSource } from '@/api/data';
 import { calculateSPC, analyzeWithAI, refreshSPCData } from '@/api/spc';
 import MonitorCenterModal from '@/components/MonitorCenterModal.vue';
+import CreateMonitorModal from '@/components/CreateMonitorModal.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import SettingsModal from '@/components/SettingsModal.vue';
 
@@ -340,6 +338,7 @@ const dataInputTab = ref('manual');
 const loading = ref(false);
 const aiLoading = ref(false);
 const showMonitorCenter = ref(false);
+const showCreateMonitor = ref(false);
 const showHelp = ref(false);
 const showSettings = ref(false);
 const chartRef = ref<HTMLElement | null>(null);
@@ -373,8 +372,6 @@ const analysisConfig = reactive({
   confidenceLevel: '99',
   showRules: true,
   showPrediction: false,
-  autoRefresh: true,      // 是否自动刷新
-  refreshInterval: 60,    // 刷新间隔(秒)
 });
 
 // 子组大小是否被锁定（从文件解析后禁止编辑）
@@ -546,11 +543,10 @@ const handleAddData = async () => {
     // 自动触发AI分析
     await performAIAnalysis(dataSourceId);
     
-    // 如果是系统对接数据源，启动自动刷新
-    if (dataInputTab.value === 'system' && analysisConfig.autoRefresh) {
-      const interval = Math.max(10, Math.min(3600, analysisConfig.refreshInterval || 60));
-      store.startAutoRefresh(interval, performAutoRefresh);
-      message.success(`数据添加成功，自动刷新已启动 (${interval}秒)`);
+    // 如果是系统对接数据源，自动启动定时刷新
+    if (dataInputTab.value === 'system') {
+      store.startAutoRefresh(60, performAutoRefresh);
+      message.success('数据添加成功，已启动自动刷新 (60秒)');
     } else {
       message.success('数据添加成功');
     }
@@ -695,7 +691,11 @@ const handleFullscreen = () => {
 };
 
 const handleCreateMonitor = () => {
-  message.info('监控功能：将在Phase 5实现');
+  if (!store.currentDataSource) {
+    message.warning('请先添加数据');
+    return;
+  }
+  showCreateMonitor.value = true;
 };
 
 const handleExportRawData = () => {
@@ -728,10 +728,14 @@ const performAutoRefresh = async () => {
   if (!store.currentDataSource?.id) return;
   
   try {
-    const res = await refreshSPCData(store.currentDataSource.id);
-    
-    // 更新数据源
-    store.setDataSource(res.data.data_source);
+    // 传入当前的分析配置参数，确保刷新时使用最新的配置
+    const res = await refreshSPCData(store.currentDataSource.id, {
+      chart_type: analysisConfig.chartType,
+      subgroup_size: analysisConfig.subgroupSize,
+      confidence_level: analysisConfig.confidenceLevel,
+      show_rules: analysisConfig.showRules,
+      show_prediction: analysisConfig.showPrediction,
+    });
     
     // 更新SPC结果
     store.setSPCResult(res.data.spc_result);
@@ -984,23 +988,4 @@ onUnmounted(() => {
   justify-content: center;
 }
 
-/* 自动刷新状态样式 */
-.refresh-status {
-  margin-left: 8px;
-  font-size: 12px;
-}
-
-.refresh-status.running {
-  color: #52c41a;
-}
-
-.refresh-status.stopped {
-  color: #8c8c8c;
-}
-
-.refresh-hint {
-  font-size: 12px;
-  color: #8c8c8c;
-  margin-top: 4px;
-}
 </style>

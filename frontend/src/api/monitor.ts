@@ -8,10 +8,12 @@ import type { MonitorTask, ApiResponse } from '@/types';
 export const createMonitorTask = (data: {
   name: string;
   data_source_id: number;
-  analysis_config_id: number;
+  chart_type: string;
+  subgroup_size: number;
+  confidence_level: string;
   interval_seconds: number;
 }) => {
-  return api.post<ApiResponse<{ id: number; name: string }>>('/monitor/tasks', data);
+  return api.post<ApiResponse<{ id: number; name: string; analysis_config_id: number }>>('/monitor/tasks', data);
 };
 
 // 获取监控任务列表

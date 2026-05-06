@@ -153,15 +153,26 @@ router = APIRouter(prefix="/spc", tags=["SPC分析"])
 @router.post("/refresh", response_model=ApiResponse)
 async def refresh_spc_data(
     data_source_id: int,
+    chart_type: Optional[str] = "xbar_r",
+    subgroup_size: Optional[int] = 5,
+    confidence_level: Optional[str] = "99",
+    show_rules: Optional[bool] = True,
+    show_prediction: Optional[bool] = False,
     db: Session = Depends(get_db)
 ):
     """
     刷新系统对接数据源的SPC计算结果
     
     用于前端定时轮询，重新查询外部系统数据并执行SPC计算
+    支持传入分析配置参数，确保刷新时使用最新的配置
     
     Args:
         data_source_id: 数据源ID
+        chart_type: 图表类型
+        subgroup_size: 子组大小
+        confidence_level: 置信水平
+        show_rules: 是否显示判异规则
+        show_prediction: 是否显示预测区间
         
     Returns:
         包含最新数据源信息和SPC计算结果
@@ -175,29 +186,19 @@ async def refresh_spc_data(
     if data_source.source_type != DataSourceType.SYSTEM:
         raise HTTPException(status_code=400, detail="仅支持系统对接类型的数据源刷新")
     
-    # 获取关联的分析配置
-    analysis_config = db.query(AnalysisConfig).filter(
-        AnalysisConfig.data_source_id == data_source_id
-    ).order_by(AnalysisConfig.created_at.desc()).first()
-    
-    # 使用默认配置或关联配置
-    subgroup_size = analysis_config.subgroup_size if analysis_config else 5
-    chart_type = analysis_config.chart_type.value if analysis_config else "xbar_r"
-    confidence_level = analysis_config.confidence_level.value if analysis_config else "99"
-    show_rules = analysis_config.show_rules if analysis_config else True
-    show_prediction = analysis_config.show_prediction if analysis_config else False
+    # 使用传入的分析配置参数（前端传入，确保使用最新的用户配置）
+    # chart_type, subgroup_size, confidence_level 等都从参数获取
+    pass  # 参数已在函数签名中定义，直接使用即可
     
     try:
-        # 重新查询外部系统数据
+        # 重新查询外部系统数据（不落库，只在内存中使用）
         data_values = _get_data_values_from_source(data_source, subgroup_size)
         
         if not data_values:
             raise HTTPException(status_code=400, detail="外部系统查询结果为空")
         
-        # 更新数据源的 data_values
-        data_source.data_values = data_values
-        db.commit()
-        db.refresh(data_source)
+        # 注意：不更新数据库中的 data_values，避免污染原始数据
+        # 系统对接数据源的刷新应该是一次性查询，不持久化
         
         # 执行SPC计算
         spc_result = calculate_spc(

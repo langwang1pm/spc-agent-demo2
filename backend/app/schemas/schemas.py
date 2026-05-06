@@ -162,7 +162,9 @@ class MonitorTaskCreate(BaseModel):
     """创建监控任务"""
     name: str = Field(..., description="任务名称")
     data_source_id: int = Field(..., description="数据源ID")
-    analysis_config_id: int = Field(..., description="分析配置ID")
+    chart_type: ChartType = Field(..., description="图表类型")
+    subgroup_size: int = Field(..., description="子组大小")
+    confidence_level: ConfidenceLevel = Field(..., description="置信水平")
     interval_seconds: int = Field(default=10, ge=1, le=3600, description="监控间隔（秒）")
 
 

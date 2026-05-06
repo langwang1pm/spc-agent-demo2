@@ -124,6 +124,9 @@ class MonitorTask(Base):
     last_result = Column(JSON, nullable=True, comment="上次运行结果")
     has_anomaly = Column(Boolean, default=False, comment="是否存在异常")
     
+    # 最新数据快照（一维数组，用于快速展示和对比）
+    latest_data = Column(JSON, nullable=True, comment="最新一次查询到的数据，一维数组")
+    
     # 元数据
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

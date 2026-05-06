@@ -7,8 +7,60 @@ from app.core.database import get_db
 from app.models import MonitorTask, DataSource, AnalysisConfig
 from app.schemas import MonitorTaskCreate, MonitorTaskResponse, ApiResponse
 from app.services.monitor import add_monitor_job, remove_monitor_job, run_monitor_task, get_running_tasks
+from app.services.system_query import get_system_data_values, SystemQueryError
+from datetime import datetime
+import json
 
 router = APIRouter(prefix="/monitor", tags=["监控任务"])
+
+
+def _get_latest_data_from_source(data_source: DataSource, subgroup_size: int = 5) -> list:
+    """
+    从数据源获取最新一次查询到的数据，返回一维数组。
+    
+    支持:
+    - SYSTEM: 从外部系统实时查询
+    - FILE: 从文件读取
+    - MANUAL: 从 data_values 字段获取
+    """
+    source_type = data_source.source_type.value if hasattr(data_source.source_type, 'value') else str(data_source.source_type)
+    
+    if source_type == 'system':
+        # 系统对接数据源 - 从外部系统查询
+        raw_values = get_system_data_values(
+            system_type=data_source.system_type.value,
+            connection_config=data_source.connection_config,
+            query_config=data_source.query_config
+        )
+        return raw_values  # 返回一维数组
+    
+    elif source_type == 'file':
+        # 文件导入 - 从文件读取
+        if not data_source.file_path:
+            return []
+        from app.api.spc import _parse_file_values
+        values_2d = _parse_file_values(data_source.file_path)
+        # 转换为一维数组
+        result = []
+        for group in values_2d:
+            result.extend(group)
+        return result
+    
+    else:
+        # 手动输入 - 从 data_values 获取
+        raw_data = data_source.data_values
+        if isinstance(raw_data, str):
+            raw_data = json.loads(raw_data)
+        if not raw_data:
+            return []
+        if isinstance(raw_data[0], (int, float)):
+            return raw_data  # 本身是一维数组
+        else:
+            # 二维数组转换为一维
+            result = []
+            for group in raw_data:
+                result.extend(group)
+            return result
 
 
 @router.post("/tasks", response_model=ApiResponse)
@@ -16,21 +68,39 @@ async def create_monitor_task(
     task: MonitorTaskCreate,
     db: Session = Depends(get_db)
 ):
-    """创建监控任务"""
-    # 检查数据源和分析配置是否存在
-    data_source = db.query(DataSource).filter(DataSource.id == task.data_source_id).first()
-    analysis_config = db.query(AnalysisConfig).filter(AnalysisConfig.id == task.analysis_config_id).first()
+    """
+    创建监控任务
     
+    流程:
+    1. 保存分析配置到 analysis_configs 表
+    2. 创建监控任务到 monitor_tasks 表，同时保存最新数据快照
+    """
+    # 检查数据源是否存在
+    data_source = db.query(DataSource).filter(DataSource.id == task.data_source_id).first()
     if not data_source:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    if not analysis_config:
-        raise HTTPException(status_code=404, detail="分析配置不存在")
     
+    # 1. 保存分析配置到 analysis_configs 表
+    db_config = AnalysisConfig(
+        data_source_id=task.data_source_id,
+        chart_type=task.chart_type,
+        subgroup_size=task.subgroup_size,
+        confidence_level=task.confidence_level
+    )
+    db.add(db_config)
+    db.commit()
+    db.refresh(db_config)
+    
+    # 2. 获取最新一次查询到的数据（一维数组）
+    latest_data = _get_latest_data_from_source(data_source, task.subgroup_size)
+    
+    # 3. 创建监控任务
     db_task = MonitorTask(
         name=task.name,
         data_source_id=task.data_source_id,
-        analysis_config_id=task.analysis_config_id,
-        interval_seconds=task.interval_seconds
+        analysis_config_id=db_config.id,
+        interval_seconds=task.interval_seconds,
+        latest_data=latest_data
     )
     db.add(db_task)
     db.commit()
@@ -45,6 +115,7 @@ async def create_monitor_task(
         data={
             "id": db_task.id,
             "name": db_task.name,
+            "analysis_config_id": db_config.id,
             "interval_seconds": db_task.interval_seconds
         }
     )

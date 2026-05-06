@@ -16,8 +16,14 @@ export const calculateSPC = (params: {
   return api.get<ApiResponse<SPCResult>>('/spc/calculate', { params });
 };
 
-// 刷新系统对接数据源
-export const refreshSPCData = (dataSourceId: number) => {
+// 刷新系统对接数据源（支持传入分析配置参数）
+export const refreshSPCData = (dataSourceId: number, config?: {
+  chart_type?: string;
+  subgroup_size?: number;
+  confidence_level?: string;
+  show_rules?: boolean;
+  show_prediction?: boolean;
+}) => {
   return api.post<ApiResponse<{
     data_source: {
       id: number;
@@ -27,7 +33,14 @@ export const refreshSPCData = (dataSourceId: number) => {
     spc_result: SPCResult;
     refreshed_at: string;
   }>>('/spc/refresh', null, {
-    params: { data_source_id: dataSourceId },
+    params: { 
+      data_source_id: dataSourceId,
+      chart_type: config?.chart_type,
+      subgroup_size: config?.subgroup_size,
+      confidence_level: config?.confidence_level,
+      show_rules: config?.show_rules,
+      show_prediction: config?.show_prediction,
+    },
   });
 };
 
