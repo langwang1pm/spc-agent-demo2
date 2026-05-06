@@ -185,7 +185,7 @@
             <a-button 
               v-if="showMonitorButton" 
               type="primary" 
-              @click="handleCreateMonitor" 
+              @click="openMonitorModal" 
               :disabled="!hasData"
             >
               <template #icon><MonitorIcon /></template>
@@ -304,6 +304,47 @@
     <!-- 监控中心弹窗 -->
     <MonitorCenterModal v-model:visible="showMonitorCenter" />
 
+    <!-- 创建监控任务弹窗 -->
+    <a-modal
+      v-model:open="showMonitorModal"
+      title="创建监控任务"
+      :confirm-loading="createMonitorLoading"
+      @ok="handleConfirmCreateMonitor"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="任务名称" required>
+          <a-input v-model:value="monitorTaskName" placeholder="请输入监控任务名称" />
+        </a-form-item>
+        <a-form-item label="监控间隔(秒)">
+          <a-input-number 
+            v-model:value="monitorInterval" 
+            :min="10" 
+            :max="3600" 
+            :step="10"
+            style="width: 100%"
+          />
+          <div class="form-hint">建议设置不小于60秒，避免频繁查询</div>
+        </a-form-item>
+        <a-divider />
+        <div class="task-preview">
+          <h4>任务配置预览</h4>
+          <p><strong>数据源:</strong> {{ store.currentDataSource?.name }}</p>
+          <p><strong>数据源类型:</strong> {{ store.currentDataSource?.system_type || 'DATABASE' }}</p>
+          <p v-if="previewConnectionConfig"><strong>连接配置:</strong></p>
+          <pre v-if="previewConnectionConfig" class="preview-code">{{ previewConnectionConfig }}</pre>
+          <p v-else-if="systemData.connectionConfig"><strong>连接配置:</strong></p>
+          <pre v-else-if="systemData.connectionConfig" class="preview-code">{{ formatConnectionConfig(systemData.connectionConfig) }}</pre>
+          <p v-if="store.currentDataSource?.query_config"><strong>数据查询:</strong></p>
+          <pre v-if="store.currentDataSource?.query_config" class="preview-code">{{ store.currentDataSource.query_config }}</pre>
+          <p v-else-if="systemData.queryConfig"><strong>数据查询:</strong></p>
+          <pre v-else-if="systemData.queryConfig" class="preview-code">{{ systemData.queryConfig }}</pre>
+          <p><strong>图表类型:</strong> {{ analysisConfig.chartType }}</p>
+          <p><strong>子组大小:</strong> {{ analysisConfig.subgroupSize }}</p>
+          <p><strong>置信水平:</strong> {{ analysisConfig.confidenceLevel }}%</p>
+        </div>
+      </a-form>
+    </a-modal>
+
     <!-- 帮助弹窗 -->
     <HelpModal v-model:visible="showHelp" />
 
@@ -329,6 +370,7 @@ import type { UploadFile } from 'ant-design-vue';
 import { useAppStore } from '@/stores/app';
 import { createManualData, uploadFileData, createSystemData, getDataSource } from '@/api/data';
 import { calculateSPC, analyzeWithAI, refreshSPCData } from '@/api/spc';
+import { createMonitorTask } from '@/api/monitor';
 import MonitorCenterModal from '@/components/MonitorCenterModal.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import SettingsModal from '@/components/SettingsModal.vue';
@@ -405,6 +447,45 @@ const showMonitorButton = computed(() => {
   const sourceType = store.currentDataSource?.source_type;
   return sourceType === 'system';
 });
+
+// 格式化连接配置显示（隐藏密码）
+const previewConnectionConfig = computed(() => {
+  const config = store.currentDataSource?.connection_config;
+  if (!config) return null;
+  
+  // 如果是字符串，尝试解析为JSON
+  let parsedConfig = config;
+  if (typeof config === 'string') {
+    try {
+      parsedConfig = JSON.parse(config);
+    } catch {
+      return config;
+    }
+  }
+  
+  // 隐藏敏感字段（密码）
+  const safeConfig = { ...parsedConfig };
+  if (safeConfig.password) {
+    safeConfig.password = '******';
+  }
+  
+  return JSON.stringify(safeConfig, null, 2);
+});
+
+// 格式化表单中的连接配置字符串（用于弹窗预览备选）
+const formatConnectionConfig = (configStr: string) => {
+  if (!configStr) return '';
+  try {
+    const parsed = JSON.parse(configStr);
+    const safeConfig = { ...parsed };
+    if (safeConfig.password) {
+      safeConfig.password = '******';
+    }
+    return JSON.stringify(safeConfig, null, 2);
+  } catch {
+    return configStr;
+  }
+};
 
 // 原始数据列
 const rawDataColumns = [
@@ -712,6 +793,84 @@ const handleSettingsUpdate = (settings: any) => {
   store.updateSystemSettings(settings);
 };
 
+// 创建监控任务相关状态
+const showMonitorModal = ref(false);
+const monitorTaskName = ref('');
+const monitorInterval = ref(60);
+const createMonitorLoading = ref(false);
+
+const openMonitorModal = () => {
+  // 使用当前数据源的名称作为默认任务名
+  monitorTaskName.value = store.currentDataSource?.name || '监控任务';
+  monitorInterval.value = analysisConfig.refreshInterval || 60;
+  showMonitorModal.value = true;
+};
+
+const handleConfirmCreateMonitor = async () => {
+  if (!monitorTaskName.value.trim()) {
+    message.warning('请输入任务名称');
+    return;
+  }
+  
+  if (!store.currentDataSource) {
+    message.warning('请先添加数据源');
+    return;
+  }
+  
+  // 验证系统对接数据源的必需字段
+  if (store.currentDataSource.source_type === 'system') {
+    if (!store.currentDataSource.connection_config) {
+      message.error('数据源缺少连接配置，请重新创建数据源');
+      return;
+    }
+    if (!store.currentDataSource.query_config) {
+      message.error('数据源缺少查询语句，请重新创建数据源');
+      return;
+    }
+  }
+  
+  createMonitorLoading.value = true;
+  try {
+    const res = await createMonitorTask({
+      name: monitorTaskName.value.trim(),
+      data_source: {
+        name: store.currentDataSource.name,
+        source_type: store.currentDataSource.source_type,
+        system_type: store.currentDataSource.system_type || 'DATABASE',
+        connection_config: store.currentDataSource.connection_config,
+        query_config: store.currentDataSource.query_config || '',
+        data_values: store.currentDataSource.data_values,
+        file_name: store.currentDataSource.file_name,
+        file_path: store.currentDataSource.file_path,
+      },
+      analysis_config: {
+        chart_type: analysisConfig.chartType,
+        subgroup_size: analysisConfig.subgroupSize,
+        confidence_level: analysisConfig.confidenceLevel,
+        show_rules: analysisConfig.showRules,
+        show_prediction: analysisConfig.showPrediction,
+        auto_refresh: analysisConfig.autoRefresh,
+        refresh_interval: analysisConfig.refreshInterval,
+      },
+      interval_seconds: monitorInterval.value,
+    });
+    
+    message.success(`监控任务「${monitorTaskName.value}」创建成功`);
+    showMonitorModal.value = false;
+  } catch (error: any) {
+    const detail = error?.response?.data?.detail;
+    let errMsg = '创建监控任务失败';
+    if (Array.isArray(detail) && detail.length > 0) {
+      errMsg = detail.map((e: any) => e.msg || String(e)).join('; ');
+    } else if (typeof detail === 'string') {
+      errMsg = detail;
+    }
+    message.error(errMsg);
+  } finally {
+    createMonitorLoading.value = false;
+  }
+};
+
 const renderMarkdown = (text: string) => {
   // 简单实现，实际项目中可使用marked等库
   return text
@@ -728,7 +887,14 @@ const performAutoRefresh = async () => {
   if (!store.currentDataSource?.id) return;
   
   try {
-    const res = await refreshSPCData(store.currentDataSource.id);
+    // 传递当前分析配置，确保刷新时使用最新的配置值
+    const res = await refreshSPCData(store.currentDataSource.id, {
+      chart_type: analysisConfig.chartType,
+      subgroup_size: analysisConfig.subgroupSize,
+      confidence_level: analysisConfig.confidenceLevel,
+      show_rules: analysisConfig.showRules,
+      show_prediction: analysisConfig.showPrediction,
+    });
     
     // 更新数据源
     store.setDataSource(res.data.data_source);
@@ -1002,5 +1168,39 @@ onUnmounted(() => {
   font-size: 12px;
   color: #8c8c8c;
   margin-top: 4px;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 4px;
+}
+
+.task-preview {
+  background: #f5f5f5;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.task-preview h4 {
+  margin: 0 0 8px 0;
+}
+
+.task-preview p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.preview-code {
+  background: #e8e8e8;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 4px 0 8px 0;
+  max-height: 120px;
+  overflow-y: auto;
 }
 </style>

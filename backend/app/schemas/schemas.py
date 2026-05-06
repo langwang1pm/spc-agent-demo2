@@ -158,12 +158,25 @@ class StatisticsResult(BaseModel):
 
 # ==================== 监控任务相关 ====================
 
+class AnalysisConfigForMonitor(BaseModel):
+    """创建监控任务时使用的分析配置（无需data_source_id，由后端自动关联）"""
+    chart_type: ChartType = Field(default=ChartType.XBAR_R, description="图表类型")
+    subgroup_size: int = Field(default=5, ge=1, le=100, description="子组大小")
+    confidence_level: ConfidenceLevel = Field(default=ConfidenceLevel.TWO_FIVE_EIGHT_SIGMA, description="置信水平")
+    show_rules: bool = Field(default=True, description="显示判异规则")
+    show_prediction: bool = Field(default=False, description="显示预测区间")
+    auto_refresh: bool = Field(default=True, description="是否自动刷新")
+    refresh_interval: int = Field(default=60, ge=1, le=3600, description="刷新间隔（秒）")
+
 class MonitorTaskCreate(BaseModel):
     """创建监控任务"""
     name: str = Field(..., description="任务名称")
-    data_source_id: int = Field(..., description="数据源ID")
-    analysis_config_id: int = Field(..., description="分析配置ID")
-    interval_seconds: int = Field(default=10, ge=1, le=3600, description="监控间隔（秒）")
+    data_source_id: Optional[int] = Field(None, description="已有数据源ID")
+    analysis_config_id: Optional[int] = Field(None, description="已有分析配置ID")
+    # 直接传入数据源信息时使用
+    data_source: Optional[DataSourceCreate] = Field(None, description="数据源信息（新建时使用）")
+    analysis_config: Optional[AnalysisConfigForMonitor] = Field(None, description="分析配置（新建时使用）")
+    interval_seconds: int = Field(default=60, ge=1, le=3600, description="监控间隔（秒）")
 
 
 class MonitorTaskResponse(BaseModel):
@@ -175,7 +188,8 @@ class MonitorTaskResponse(BaseModel):
     interval_seconds: int
     is_active: bool
     last_run_at: Optional[datetime] = None
-    last_result: Optional[Dict[str, Any]] = None
+    last_result: Optional[Dict[str, Any]] = None  # 简略结果
+    spc_result: Optional[Dict[str, Any]] = None    # 完整的SPC结果，用于前端渲染图表
     has_anomaly: bool
     created_at: datetime
     updated_at: Optional[datetime] = None

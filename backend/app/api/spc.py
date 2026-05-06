@@ -153,6 +153,11 @@ router = APIRouter(prefix="/spc", tags=["SPC分析"])
 @router.post("/refresh", response_model=ApiResponse)
 async def refresh_spc_data(
     data_source_id: int,
+    chart_type: Optional[str] = None,
+    subgroup_size: Optional[int] = None,
+    confidence_level: Optional[str] = None,
+    show_rules: Optional[bool] = None,
+    show_prediction: Optional[bool] = None,
     db: Session = Depends(get_db)
 ):
     """
@@ -162,6 +167,11 @@ async def refresh_spc_data(
     
     Args:
         data_source_id: 数据源ID
+        chart_type: 图表类型（可选，不传则使用数据库配置或默认值）
+        subgroup_size: 子组大小（可选，不传则使用数据库配置或默认值）
+        confidence_level: 置信水平（可选，不传则使用数据库配置或默认值）
+        show_rules: 是否显示判异规则（可选）
+        show_prediction: 是否显示预测区间（可选）
         
     Returns:
         包含最新数据源信息和SPC计算结果
@@ -175,21 +185,35 @@ async def refresh_spc_data(
     if data_source.source_type != DataSourceType.SYSTEM:
         raise HTTPException(status_code=400, detail="仅支持系统对接类型的数据源刷新")
     
-    # 获取关联的分析配置
+    # 获取关联的分析配置（作为默认值）
     analysis_config = db.query(AnalysisConfig).filter(
         AnalysisConfig.data_source_id == data_source_id
     ).order_by(AnalysisConfig.created_at.desc()).first()
     
-    # 使用默认配置或关联配置
-    subgroup_size = analysis_config.subgroup_size if analysis_config else 5
-    chart_type = analysis_config.chart_type.value if analysis_config else "xbar_r"
-    confidence_level = analysis_config.confidence_level.value if analysis_config else "99"
-    show_rules = analysis_config.show_rules if analysis_config else True
-    show_prediction = analysis_config.show_prediction if analysis_config else False
+    # 确定最终使用的配置值：优先使用前端传参，其次使用数据库配置，最后使用默认值
+    final_subgroup_size = subgroup_size
+    if final_subgroup_size is None:
+        final_subgroup_size = analysis_config.subgroup_size if analysis_config else 5
+    
+    final_chart_type = chart_type
+    if final_chart_type is None:
+        final_chart_type = analysis_config.chart_type.value if analysis_config else "xbar_r"
+    
+    final_confidence_level = confidence_level
+    if final_confidence_level is None:
+        final_confidence_level = analysis_config.confidence_level.value if analysis_config else "99"
+    
+    final_show_rules = show_rules
+    if final_show_rules is None:
+        final_show_rules = analysis_config.show_rules if analysis_config else True
+    
+    final_show_prediction = show_prediction
+    if final_show_prediction is None:
+        final_show_prediction = analysis_config.show_prediction if analysis_config else False
     
     try:
-        # 重新查询外部系统数据
-        data_values = _get_data_values_from_source(data_source, subgroup_size)
+        # 重新查询外部系统数据（使用前端传参或最终确定的子组大小）
+        data_values = _get_data_values_from_source(data_source, final_subgroup_size)
         
         if not data_values:
             raise HTTPException(status_code=400, detail="外部系统查询结果为空")
@@ -199,14 +223,14 @@ async def refresh_spc_data(
         db.commit()
         db.refresh(data_source)
         
-        # 执行SPC计算
+        # 执行SPC计算（使用最终确定的配置值）
         spc_result = calculate_spc(
             data=data_values,
-            chart_type=chart_type,
-            subgroup_size=subgroup_size,
-            confidence_level=confidence_level,
-            show_rules=show_rules,
-            show_prediction=show_prediction
+            chart_type=final_chart_type,
+            subgroup_size=final_subgroup_size,
+            confidence_level=final_confidence_level,
+            show_rules=final_show_rules,
+            show_prediction=final_show_prediction
         )
         
         return ApiResponse(
@@ -216,7 +240,10 @@ async def refresh_spc_data(
                 "data_source": {
                     "id": data_source.id,
                     "name": data_source.name,
-                    "source_type": data_source.source_type.value,  # 补充 source_type
+                    "source_type": data_source.source_type.value,
+                    "system_type": data_source.system_type.value if data_source.system_type else None,
+                    "connection_config": data_source.connection_config,
+                    "query_config": data_source.query_config,
                     "data_values": data_values,
                 },
                 "spc_result": {

@@ -4,14 +4,35 @@
 import api from './request';
 import type { MonitorTask, ApiResponse } from '@/types';
 
-// 创建监控任务
+// 创建监控任务 (支持新建或复用已有数据源/配置)
 export const createMonitorTask = (data: {
   name: string;
-  data_source_id: number;
-  analysis_config_id: number;
+  // 复用已有
+  data_source_id?: number;
+  analysis_config_id?: number;
+  // 新建
+  data_source?: {
+    name: string;
+    source_type: string; // 'manual' | 'file' | 'system'
+    system_type: string;
+    connection_config: any;
+    query_config?: string;
+    data_values?: number[][];
+    file_name?: string;
+    file_path?: string;
+  };
+  analysis_config?: {
+    chart_type: string;
+    subgroup_size: number;
+    confidence_level: string;
+    show_rules: boolean;
+    show_prediction: boolean;
+    auto_refresh?: boolean;
+    refresh_interval?: number;
+  };
   interval_seconds: number;
 }) => {
-  return api.post<ApiResponse<{ id: number; name: string }>>('/monitor/tasks', data);
+  return api.post<ApiResponse<{ id: number; name: string; spc_result: any; has_anomaly: boolean }>>('/monitor/tasks', data);
 };
 
 // 获取监控任务列表

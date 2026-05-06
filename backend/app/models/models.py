@@ -116,13 +116,19 @@ class MonitorTask(Base):
     analysis_config_id = Column(Integer, ForeignKey("spc_agent_demo.analysis_configs.id"), nullable=False, comment="分析配置ID")
     
     # 监控配置
-    interval_seconds = Column(Integer, nullable=False, default=10, comment="监控间隔（秒）")
+    interval_seconds = Column(Integer, nullable=False, default=60, comment="监控间隔（秒）")
     is_active = Column(Boolean, default=True, comment="是否激活")
     
     # 运行状态
     last_run_at = Column(DateTime(timezone=True), nullable=True, comment="上次运行时间")
-    last_result = Column(JSON, nullable=True, comment="上次运行结果")
+    last_result = Column(JSON, nullable=True, comment="上次运行结果(简略)")
     has_anomaly = Column(Boolean, default=False, comment="是否存在异常")
+    
+    # SPC结果缓存 (用于监控中心预渲染图表)
+    spc_cache = Column(JSON, nullable=True, comment="SPC计算结果缓存")
+    
+    # 最新数据快照（一维数组，用于快速预览和对比）
+    latest_data = Column(JSON, nullable=True, comment="最新一次查询的数据，一维数组")
     
     # 元数据
     created_at = Column(DateTime(timezone=True), server_default=func.now())

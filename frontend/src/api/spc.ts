@@ -17,17 +17,30 @@ export const calculateSPC = (params: {
 };
 
 // 刷新系统对接数据源
-export const refreshSPCData = (dataSourceId: number) => {
+export const refreshSPCData = (dataSourceId: number, config?: {
+  chart_type?: string;
+  subgroup_size?: number;
+  confidence_level?: string;
+  show_rules?: boolean;
+  show_prediction?: boolean;
+}) => {
   return api.post<ApiResponse<{
     data_source: {
       id: number;
       name: string;
+      source_type: string;
+      system_type?: string;
+      connection_config?: Record<string, any>;
+      query_config?: string;
       data_values: number[][];
     };
     spc_result: SPCResult;
     refreshed_at: string;
   }>>('/spc/refresh', null, {
-    params: { data_source_id: dataSourceId },
+    params: { 
+      data_source_id: dataSourceId,
+      ...config  // 展开分析配置参数
+    },
   });
 };
 

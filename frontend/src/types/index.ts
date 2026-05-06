@@ -113,7 +113,8 @@ export interface MonitorTask {
   interval_seconds: number;
   is_active: boolean;
   last_run_at?: string;
-  last_result?: SPCResult;
+  last_result?: Record<string, any>;  // 简略结果
+  spc_result?: SPCResult;              // 完整SPC数据，用于渲染图表
   has_anomaly: boolean;
   created_at: string;
 }
