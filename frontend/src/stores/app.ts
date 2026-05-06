@@ -25,6 +25,12 @@ export const useAppStore = defineStore('app', () => {
   });
   const loading = ref(false);
   const isDataAdded = ref(false); // 标记是否点击了"添加数据"
+  
+  // 自动刷新相关状态
+  const refreshTimer = ref<number | null>(null);  // 定时器ID
+  const isRefreshing = ref(false);                // 是否正在刷新
+  const refreshFailCount = ref(0);                // 连续失败次数
+  const maxRefreshFails = 3;                      // 最大失败次数，超过后暂停刷新
 
   // 计算属性
   const hasDataSource = computed(() => currentDataSource.value !== null);
@@ -70,6 +76,54 @@ export const useAppStore = defineStore('app', () => {
     spcResult.value = null;
     aiAnalysisResult.value = null;
     isDataAdded.value = false;
+    // 停止自动刷新
+    stopAutoRefresh();
+  };
+  
+  // 自动刷新管理方法
+  const startAutoRefresh = (intervalSeconds: number = 60, refreshCallback: () => Promise<void>) => {
+    // 清除旧定时器
+    stopAutoRefresh();
+    
+    // 重置失败计数
+    refreshFailCount.value = 0;
+    
+    // 启动新定时器
+    refreshTimer.value = window.setInterval(async () => {
+      if (isRefreshing.value) return; // 防止重叠执行
+      
+      isRefreshing.value = true;
+      try {
+        await refreshCallback();
+        refreshFailCount.value = 0; // 成功后重置失败计数
+      } catch (error) {
+        refreshFailCount.value++;
+        console.error(`自动刷新失败 (${refreshFailCount.value}/${maxRefreshFails}):`, error);
+        
+        // 连续失败超过阈值，暂停刷新
+        if (refreshFailCount.value >= maxRefreshFails) {
+          console.warn('连续失败次数过多，已暂停自动刷新');
+          stopAutoRefresh();
+        }
+      } finally {
+        isRefreshing.value = false;
+      }
+    }, intervalSeconds * 1000);
+    
+    console.log(`自动刷新已启动，间隔: ${intervalSeconds}秒`);
+  };
+  
+  const stopAutoRefresh = () => {
+    if (refreshTimer.value) {
+      clearInterval(refreshTimer.value);
+      refreshTimer.value = null;
+      console.log('自动刷新已停止');
+    }
+    refreshFailCount.value = 0;
+  };
+  
+  const isAutoRefreshActive = () => {
+    return refreshTimer.value !== null;
   };
 
   return {
@@ -96,5 +150,12 @@ export const useAppStore = defineStore('app', () => {
     setLoading,
     setDataAdded,
     reset,
+    // 自动刷新
+    refreshTimer,
+    isRefreshing,
+    refreshFailCount,
+    startAutoRefresh,
+    stopAutoRefresh,
+    isAutoRefreshActive,
   };
 });

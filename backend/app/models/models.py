@@ -92,6 +92,10 @@ class AnalysisConfig(Base):
     # 计算结果缓存
     statistics_result = Column(JSON, nullable=True, comment="统计结果缓存")
     
+    # 自动刷新配置（用于系统对接数据源）
+    auto_refresh = Column(Boolean, default=True, comment="是否自动刷新")
+    refresh_interval = Column(Integer, default=60, comment="刷新间隔(秒)")
+    
     # 元数据
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

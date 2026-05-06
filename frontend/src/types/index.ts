@@ -48,6 +48,8 @@ export interface AnalysisConfig {
   show_rules: boolean;
   show_prediction: boolean;
   statistics_result?: StatisticsResult;
+  auto_refresh?: boolean;        // 是否自动刷新（系统对接数据源）
+  refresh_interval?: number;      // 刷新间隔(秒)，默认60
   created_at: string;
   updated_at?: string;
 }

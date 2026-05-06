@@ -145,7 +145,99 @@ def _parse_file_values(file_path: str) -> List[List[float]]:
         wb.close()
     return rows
 
+from datetime import datetime
+
 router = APIRouter(prefix="/spc", tags=["SPC分析"])
+
+
+@router.post("/refresh", response_model=ApiResponse)
+async def refresh_spc_data(
+    data_source_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    刷新系统对接数据源的SPC计算结果
+    
+    用于前端定时轮询，重新查询外部系统数据并执行SPC计算
+    
+    Args:
+        data_source_id: 数据源ID
+        
+    Returns:
+        包含最新数据源信息和SPC计算结果
+    """
+    # 获取数据源
+    data_source = db.query(DataSource).filter(DataSource.id == data_source_id).first()
+    if not data_source:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    
+    # 仅支持系统对接类型
+    if data_source.source_type != DataSourceType.SYSTEM:
+        raise HTTPException(status_code=400, detail="仅支持系统对接类型的数据源刷新")
+    
+    # 获取关联的分析配置
+    analysis_config = db.query(AnalysisConfig).filter(
+        AnalysisConfig.data_source_id == data_source_id
+    ).order_by(AnalysisConfig.created_at.desc()).first()
+    
+    # 使用默认配置或关联配置
+    subgroup_size = analysis_config.subgroup_size if analysis_config else 5
+    chart_type = analysis_config.chart_type.value if analysis_config else "xbar_r"
+    confidence_level = analysis_config.confidence_level.value if analysis_config else "99"
+    show_rules = analysis_config.show_rules if analysis_config else True
+    show_prediction = analysis_config.show_prediction if analysis_config else False
+    
+    try:
+        # 重新查询外部系统数据
+        data_values = _get_data_values_from_source(data_source, subgroup_size)
+        
+        if not data_values:
+            raise HTTPException(status_code=400, detail="外部系统查询结果为空")
+        
+        # 更新数据源的 data_values
+        data_source.data_values = data_values
+        db.commit()
+        db.refresh(data_source)
+        
+        # 执行SPC计算
+        spc_result = calculate_spc(
+            data=data_values,
+            chart_type=chart_type,
+            subgroup_size=subgroup_size,
+            confidence_level=confidence_level,
+            show_rules=show_rules,
+            show_prediction=show_prediction
+        )
+        
+        return ApiResponse(
+            success=True,
+            message="数据刷新成功",
+            data={
+                "data_source": {
+                    "id": data_source.id,
+                    "name": data_source.name,
+                    "source_type": data_source.source_type.value,  # 补充 source_type
+                    "data_values": data_values,
+                },
+                "spc_result": {
+                    "chart_type": spc_result["chart_type"],
+                    "chart_data": spc_result["chart_data"],
+                    "data_values": spc_result["data_values"],
+                    "statistics": spc_result["statistics"],
+                    "control_limits": spc_result["control_limits"],
+                    "anomalies": spc_result["anomalies"],
+                    "rules_violations": spc_result["rules_violations"]
+                },
+                "refreshed_at": datetime.now().isoformat()
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except SystemQueryError as e:
+        raise HTTPException(status_code=400, detail=f"外部系统查询失败: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"数据刷新失败: {str(e)}")
 
 
 @router.get("/calculate", response_model=ApiResponse)

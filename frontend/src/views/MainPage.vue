@@ -148,6 +148,23 @@
             <a-form-item label="显示预测区间">
               <a-switch v-model:checked="analysisConfig.showPrediction" :disabled="!hasData" />
             </a-form-item>
+            <!-- 系统对接数据源的自动刷新配置 -->
+            <a-divider v-if="dataInputTab === 'system'" />
+            <a-form-item v-if="dataInputTab === 'system'" label="自动刷新">
+              <a-switch v-model:checked="analysisConfig.autoRefresh" :disabled="!hasData" />
+              <span v-if="store.isAutoRefreshActive()" class="refresh-status running"> ● 运行中</span>
+              <span v-else-if="hasData && analysisConfig.autoRefresh" class="refresh-status stopped"> ● 已停止</span>
+            </a-form-item>
+            <a-form-item v-if="dataInputTab === 'system' && analysisConfig.autoRefresh" label="刷新间隔(秒)">
+              <a-input-number 
+                v-model:value="analysisConfig.refreshInterval" 
+                :min="10" 
+                :max="3600" 
+                :step="10"
+                :disabled="!hasData"
+              />
+              <div class="refresh-hint">范围: 10-3600秒</div>
+            </a-form-item>
           </a-form>
         </div>
       </section>
@@ -296,7 +313,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue';
+import { ref, reactive, computed, watch, onMounted, nextTick, onUnmounted } from 'vue';
 import { message } from 'ant-design-vue';
 import { 
   InboxOutlined, 
@@ -311,7 +328,7 @@ import * as echarts from 'echarts';
 import type { UploadFile } from 'ant-design-vue';
 import { useAppStore } from '@/stores/app';
 import { createManualData, uploadFileData, createSystemData, getDataSource } from '@/api/data';
-import { calculateSPC, analyzeWithAI } from '@/api/spc';
+import { calculateSPC, analyzeWithAI, refreshSPCData } from '@/api/spc';
 import MonitorCenterModal from '@/components/MonitorCenterModal.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import SettingsModal from '@/components/SettingsModal.vue';
@@ -356,6 +373,8 @@ const analysisConfig = reactive({
   confidenceLevel: '99',
   showRules: true,
   showPrediction: false,
+  autoRefresh: true,      // 是否自动刷新
+  refreshInterval: 60,    // 刷新间隔(秒)
 });
 
 // 子组大小是否被锁定（从文件解析后禁止编辑）
@@ -527,7 +546,14 @@ const handleAddData = async () => {
     // 自动触发AI分析
     await performAIAnalysis(dataSourceId);
     
-    message.success('数据添加成功');
+    // 如果是系统对接数据源，启动自动刷新
+    if (dataInputTab.value === 'system' && analysisConfig.autoRefresh) {
+      const interval = Math.max(10, Math.min(3600, analysisConfig.refreshInterval || 60));
+      store.startAutoRefresh(interval, performAutoRefresh);
+      message.success(`数据添加成功，自动刷新已启动 (${interval}秒)`);
+    } else {
+      message.success('数据添加成功');
+    }
   } catch (error) {
     message.error('添加数据失败');
     console.error(error);
@@ -697,6 +723,31 @@ const renderMarkdown = (text: string) => {
     .replace(/\n/gim, '<br>');
 };
 
+// 自动刷新回调函数
+const performAutoRefresh = async () => {
+  if (!store.currentDataSource?.id) return;
+  
+  try {
+    const res = await refreshSPCData(store.currentDataSource.id);
+    
+    // 更新数据源
+    store.setDataSource(res.data.data_source);
+    
+    // 更新SPC结果
+    store.setSPCResult(res.data.spc_result);
+    
+    // 重新渲染图表
+    await nextTick();
+    renderChart(res.data.spc_result);
+    
+    console.log(`[自动刷新] 成功 - ${res.data.refreshed_at}`);
+  } catch (error: any) {
+    const errMsg = error?.response?.data?.detail || '刷新失败';
+    console.error('[自动刷新] 失败:', errMsg);
+    throw error; // 让 store 的 startAutoRefresh 处理失败计数
+  }
+};
+
 // 监听分析配置变化
 watch(() => analysisConfig, async (newConfig) => {
   if (store.currentDataSource?.id) {
@@ -709,6 +760,11 @@ onMounted(() => {
   window.addEventListener('resize', () => {
     chartInstance.value?.resize();
   });
+});
+
+// 组件卸载时清理定时器
+onUnmounted(() => {
+  store.stopAutoRefresh();
 });
 </script>
 
@@ -926,5 +982,25 @@ onMounted(() => {
   padding: 16px;
   border-top: 1px solid #f0f0f0;
   justify-content: center;
+}
+
+/* 自动刷新状态样式 */
+.refresh-status {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.refresh-status.running {
+  color: #52c41a;
+}
+
+.refresh-status.stopped {
+  color: #8c8c8c;
+}
+
+.refresh-hint {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 4px;
 }
 </style>

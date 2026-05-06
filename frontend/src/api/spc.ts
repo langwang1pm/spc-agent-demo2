@@ -16,6 +16,21 @@ export const calculateSPC = (params: {
   return api.get<ApiResponse<SPCResult>>('/spc/calculate', { params });
 };
 
+// 刷新系统对接数据源
+export const refreshSPCData = (dataSourceId: number) => {
+  return api.post<ApiResponse<{
+    data_source: {
+      id: number;
+      name: string;
+      data_values: number[][];
+    };
+    spc_result: SPCResult;
+    refreshed_at: string;
+  }>>('/spc/refresh', null, {
+    params: { data_source_id: dataSourceId },
+  });
+};
+
 // AI分析
 export const analyzeWithAI = (dataSourceId: number, analysisConfigId?: number) => {
   return api.post<ApiResponse<{
