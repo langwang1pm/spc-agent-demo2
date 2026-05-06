@@ -39,7 +39,17 @@ export const useAppStore = defineStore('app', () => {
 
   // 方法
   const setDataSource = (data: DataSource | null) => {
-    currentDataSource.value = data;
+    // 合并策略：保留 connection_config 和 query_config（如果新数据中没有）
+    if (data && currentDataSource.value) {
+      currentDataSource.value = {
+        ...data,
+        // 如果新数据中没有 connection_config，保留旧值
+        connection_config: data.connection_config ?? currentDataSource.value.connection_config,
+        query_config: data.query_config ?? currentDataSource.value.query_config,
+      };
+    } else {
+      currentDataSource.value = data;
+    }
   };
 
   const setAnalysisConfig = (config: AnalysisConfig | null) => {
