@@ -152,7 +152,11 @@ async def list_monitor_tasks(
                     "is_active": t.id in running_ids,
                     "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
                     "has_anomaly": t.has_anomaly,
-                    "created_at": t.created_at.isoformat() if t.created_at else None
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "latest_data": t.latest_data,
+                    "chart_type": t.analysis_config.chart_type.value if t.analysis_config else None,
+                    "subgroup_size": t.analysis_config.subgroup_size if t.analysis_config else 5,
+                    "confidence_level": t.analysis_config.confidence_level.value if t.analysis_config else None,
                 }
                 for t in tasks
             ]

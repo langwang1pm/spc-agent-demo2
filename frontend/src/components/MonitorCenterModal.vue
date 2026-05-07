@@ -14,6 +14,14 @@
               <span class="task-update">更新时间: {{ formatTime(task.last_run_at) }}</span>
             </div>
             <div class="card-actions">
+              <a-button size="small" @click="handleExport(task.id)" :disabled="!task.latest_data">
+                <template #icon><ExportOutlined /></template>
+                导出
+              </a-button>
+              <a-button size="small" @click="handleFullscreen(task.id)" :disabled="!task.latest_data">
+                <template #icon><FullscreenOutlined /></template>
+                全屏
+              </a-button>
               <a-button size="small" @click="handleRefresh(task.id)">
                 刷新
               </a-button>
@@ -44,7 +52,7 @@
           </div>
           
           <!-- 控制图预览 -->
-          <div v-if="task.spc_result" class="chart-preview">
+          <div v-if="task.latest_data && task.latest_data.length > 0 && task.chart_type" class="chart-preview">
             <div :id="`chart-${task.id}`" class="mini-chart"></div>
           </div>
           <div v-else class="no-data">暂无图表数据</div>
@@ -62,6 +70,7 @@
 import { ref, watch, computed, nextTick } from 'vue';
 import { message } from 'ant-design-vue';
 import { listMonitorTasks, refreshMonitorTask, deleteMonitorTask } from '@/api/monitor';
+import { ExportOutlined, FullscreenOutlined } from '@ant-design/icons-vue';
 import dayjs from 'dayjs';
 import * as echarts from 'echarts';
 
@@ -72,7 +81,10 @@ type MonitorTaskWithSPC = {
   is_active: boolean;
   last_run_at: string | null;
   has_anomaly: boolean;
-  spc_result: any;
+  latest_data: number[] | null;
+  chart_type: string | null;
+  subgroup_size: number;
+  confidence_level: string | null;
 };
 
 const props = defineProps<{
@@ -104,8 +116,8 @@ const loadTasks = async () => {
     // 加载完成后渲染图表
     await nextTick();
     tasks.value.forEach(task => {
-      if (task.spc_result) {
-        renderChart(task.id, task.spc_result);
+      if (task.latest_data && task.latest_data.length > 0 && task.chart_type) {
+        renderChart(task.id, task.latest_data, task.chart_type, task.subgroup_size, task.confidence_level);
       }
     });
   } catch (error) {
@@ -115,9 +127,9 @@ const loadTasks = async () => {
   }
 };
 
-const renderChart = (taskId: number, spcResult: any) => {
+const renderChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
   const container = document.getElementById(`chart-${taskId}`);
-  if (!container) return;
+  if (!container || !data || data.length === 0) return;
   
   // 销毁旧实例
   if (chartInstances[taskId]) {
@@ -128,49 +140,193 @@ const renderChart = (taskId: number, spcResult: any) => {
   const chart = echarts.init(container);
   chartInstances[taskId] = chart;
   
-  const chartData = spcResult.chart_data;
-  let series: any[] = [];
-  let xAxis: any = { type: 'category', data: [] };
-  
-  // 解析图表数据
-  const primaryKey = Object.keys(chartData)[0];
-  if (primaryKey) {
-    const primary = chartData[primaryKey];
-    xAxis.data = primary.labels;
-    
-    series = [
-      { name: primary.unit, type: 'line', data: primary.data, smooth: true, symbol: 'none', lineStyle: { width: 1.5 } },
-      { name: 'UCL', type: 'line', data: Array(primary.data.length).fill(primary.ucl), linestyle: { type: 'dashed', width: 1 }, color: '#ff4d4f' },
-      { name: 'CL', type: 'line', data: Array(primary.data.length).fill(primary.cl), linestyle: { type: 'dashed', width: 1 }, color: '#52c41a' },
-      { name: 'LCL', type: 'line', data: Array(primary.data.length).fill(primary.lcl), linestyle: { type: 'dashed', width: 1 }, color: '#ff4d4f' },
-    ];
-    
-    // 标记异常点
-    spcResult.anomalies?.forEach((a: any) => {
-      series[0].markPoint = series[0].markPoint || { data: [] };
-      (series[0].markPoint.data as any[]).push({ 
-        coord: [a.index, a.value], 
-        itemStyle: { color: '#ff4d4f' },
-        symbolSize: 6
-      });
-    });
-  }
+  // 计算控制图数据
+  const chartData = calculateSPCData(data, chartType, subgroupSize, confidenceLevel);
   
   const option = {
     title: { 
-      text: spcResult.chart_type?.toUpperCase(), 
+      text: getChartTitle(chartType), 
       left: 'center',
       textStyle: { fontSize: 12 }
     },
     tooltip: { trigger: 'axis' },
     legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 10 } },
     grid: { left: '3%', right: '3%', bottom: '15%', top: '15%', containLabel: true },
-    xAxis,
+    xAxis: { type: 'category', data: chartData.labels },
     yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
-    series,
+    series: chartData.series,
   };
   
   chart.setOption(option);
+};
+
+// 计算SPC数据
+const calculateSPCData = (data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
+  const labels = data.map((_, i) => `${i + 1}`);
+  const series: any[] = [];
+  
+  // 根据图表类型计算
+  if (chartType === 'xbar_r' || chartType === 'xbar_s') {
+    // 均值图
+    const { means, ucl, cl, lcl } = calculateXBar(data, subgroupSize, confidenceLevel);
+    series.push(
+      { name: '均值', type: 'line', data: means, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
+      { name: 'UCL', type: 'line', data: Array(means.length).fill(ucl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' },
+      { name: 'CL', type: 'line', data: Array(means.length).fill(cl), lineStyle: { type: 'dashed', width: 1 }, color: '#52c41a', symbol: 'none' },
+      { name: 'LCL', type: 'line', data: Array(means.length).fill(lcl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' }
+    );
+    return { labels: means.map((_, i) => `${i + 1}`), series };
+  } else if (chartType === 'i_mr') {
+    // 单值移动极差图
+    const { values, ucl, cl, lcl } = calculateIMR(data, confidenceLevel);
+    series.push(
+      { name: '单值', type: 'line', data: values, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
+      { name: 'UCL', type: 'line', data: Array(values.length).fill(ucl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' },
+      { name: 'CL', type: 'line', data: Array(values.length).fill(cl), lineStyle: { type: 'dashed', width: 1 }, color: '#52c41a', symbol: 'none' },
+      { name: 'LCL', type: 'line', data: Array(values.length).fill(lcl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' }
+    );
+    return { labels: labels.slice(0, values.length), series };
+  } else {
+    // 默认趋势图
+    const mean = data.reduce((a, b) => a + b, 0) / data.length;
+    const std = Math.sqrt(data.reduce((sum, x) => sum + Math.pow(x - mean, 2), 0) / data.length);
+    const ucl = mean + 3 * std;
+    const lcl = mean - 3 * std;
+    series.push(
+      { name: '数据', type: 'line', data: data, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
+      { name: 'UCL', type: 'line', data: Array(data.length).fill(ucl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' },
+      { name: 'CL', type: 'line', data: Array(data.length).fill(mean), lineStyle: { type: 'dashed', width: 1 }, color: '#52c41a', symbol: 'none' },
+      { name: 'LCL', type: 'line', data: Array(data.length).fill(lcl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' }
+    );
+    return { labels, series };
+  }
+};
+
+// 计算XBar控制图
+const calculateXBar = (data: number[], subgroupSize: number, confidenceLevel: string | null) => {
+  const numGroups = Math.floor(data.length / subgroupSize);
+  const means: number[] = [];
+  const ranges: number[] = [];
+  
+  for (let i = 0; i < numGroups; i++) {
+    const group = data.slice(i * subgroupSize, (i + 1) * subgroupSize);
+    means.push(group.reduce((a, b) => a + b, 0) / subgroupSize);
+    ranges.push(Math.max(...group) - Math.min(...group));
+  }
+  
+  const overallMean = means.reduce((a, b) => a + b, 0) / means.length;
+  const avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
+  
+  // A2因子（子组大小为5时，A2=0.577）
+  const A2Factors: Record<number, number> = { 2: 1.880, 3: 1.023, 4: 0.729, 5: 0.577, 6: 0.483, 7: 0.419, 8: 0.373, 9: 0.337, 10: 0.308 };
+  const A2 = A2Factors[subgroupSize] || 0.577;
+  
+  const ucl = overallMean + A2 * avgRange;
+  const lcl = overallMean - A2 * avgRange;
+  
+  return { means, ucl, cl: overallMean, lcl };
+};
+
+// 计算I-MR控制图
+const calculateIMR = (data: number[], confidenceLevel: string | null) => {
+  const values = data;
+  const movingRanges = [0];
+  for (let i = 1; i < data.length; i++) {
+    movingRanges.push(Math.abs(data[i] - data[i - 1]));
+  }
+  
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const avgMR = movingRanges.slice(1).reduce((a, b) => a + b, 0) / (movingRanges.length - 1);
+  
+  // d2因子（n=2时，d2=1.128）
+  const d2 = 1.128;
+  const ucl = mean + 3 * avgMR / d2;
+  const lcl = mean - 3 * avgMR / d2;
+  
+  return { values, ucl, cl: mean, lcl };
+};
+
+// 获取图表标题
+const getChartTitle = (chartType: string) => {
+  const titles: Record<string, string> = {
+    'xbar_r': 'X̄-R 控制图',
+    'xbar_s': 'X̄-S 控制图',
+    'i_mr': 'I-MR 控制图',
+    'p_chart': 'p 控制图',
+    'np_chart': 'np 控制图',
+    'c_chart': 'c 控制图',
+    'u_chart': 'u 控制图',
+    'histogram': '直方图',
+    'trend': '趋势图',
+  };
+  return titles[chartType] || 'SPC 控制图';
+};
+
+const handleExport = (taskId: number) => {
+  const task = tasks.value.find(t => t.id === taskId);
+  if (!task) return;
+  
+  const chart = chartInstances[taskId];
+  if (!chart) {
+    // 如果图表实例不存在，创建一个临时图表来导出
+    const tempContainer = document.createElement('div');
+    tempContainer.style.position = 'absolute';
+    tempContainer.style.left = '-9999px';
+    tempContainer.style.width = '1200px';
+    tempContainer.style.height = '600px';
+    document.body.appendChild(tempContainer);
+    
+    const tempChart = echarts.init(tempContainer);
+    const chartData = calculateSPCData(task.latest_data!, task.chart_type!, task.subgroup_size, task.confidence_level);
+    tempChart.setOption({
+      title: { text: getChartTitle(task.chart_type!), left: 'center', textStyle: { fontSize: 14 } },
+      tooltip: { trigger: 'axis' },
+      legend: { bottom: 0, type: 'scroll' },
+      grid: { left: '3%', right: '3%', bottom: '10%', top: '15%', containLabel: true },
+      xAxis: { type: 'category', data: chartData.labels },
+      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
+      series: chartData.series,
+    });
+    
+    const url = tempChart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${task.name || 'monitor-chart'}.png`;
+    a.click();
+    
+    tempChart.dispose();
+    document.body.removeChild(tempContainer);
+    return;
+  }
+  
+  const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' });
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${task.name || 'monitor-chart'}.png`;
+  a.click();
+};
+
+const handleFullscreen = (taskId: number) => {
+  const container = document.getElementById(`chart-${taskId}`);
+  if (!container) return;
+  
+  // 注册一次性全屏事件：进入时放大，退出时缩回
+  const onFullscreenChange = async () => {
+    await nextTick();
+    const chart = chartInstances[taskId];
+    if (!chart) return;
+    
+    if (document.fullscreenElement) {
+      // 进入全屏：图表撑满屏幕
+      chart.resize({ width: container.clientWidth, height: container.clientHeight });
+    } else {
+      // 退出全屏：还原到原始容器尺寸
+      chart.resize({ width: container.clientWidth, height: 200 });
+    }
+  };
+  
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  container.requestFullscreen?.();
 };
 
 const handleRefresh = async (taskId: number) => {
@@ -203,8 +359,26 @@ const handleDelete = async (taskId: number) => {
 watch(() => props.visible, (val) => {
   if (val) {
     loadTasks();
+  } else {
+    // 关闭弹窗时销毁所有图表实例释放内存
+    Object.values(chartInstances).forEach(chart => chart.dispose());
+    Object.keys(chartInstances).forEach(key => delete chartInstances[Number(key)]);
   }
 });
+
+// 监听全屏变化，重新渲染图表（解决全屏后图表尺寸异常）
+if (typeof document !== 'undefined') {
+  document.addEventListener('fullscreenchange', async () => {
+    if (!document.fullscreenElement) {
+      await nextTick();
+      tasks.value.forEach(task => {
+        if (task.latest_data && task.latest_data.length > 0 && task.chart_type && chartInstances[task.id]) {
+          chartInstances[task.id].resize();
+        }
+      });
+    }
+  });
+}
 </script>
 
 <style scoped>
