@@ -14,6 +14,17 @@
               <span class="task-update">更新时间: {{ formatTime(task.last_run_at) }}</span>
             </div>
             <div class="card-actions">
+              <a-button
+                size="small"
+                :type="task.is_active ? 'default' : 'primary'"
+                @click="handleToggle(task.id, task.is_active)"
+              >
+                <template #icon>
+                  <PauseCircleOutlined v-if="task.is_active" />
+                  <PlayCircleOutlined v-else />
+                </template>
+                {{ task.is_active ? '暂停' : '启动' }}
+              </a-button>
               <a-button size="small" @click="handleExport(task.id)" :disabled="!task.latest_data">
                 <template #icon><ExportOutlined /></template>
                 导出
@@ -69,8 +80,8 @@
 <script setup lang="ts">
 import { ref, watch, computed, nextTick } from 'vue';
 import { message } from 'ant-design-vue';
-import { listMonitorTasks, refreshMonitorTask, deleteMonitorTask } from '@/api/monitor';
-import { ExportOutlined, FullscreenOutlined } from '@ant-design/icons-vue';
+import { listMonitorTasks, refreshMonitorTask, deleteMonitorTask, toggleMonitorTask } from '@/api/monitor';
+import { ExportOutlined, FullscreenOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons-vue';
 import dayjs from 'dayjs';
 import * as echarts from 'echarts';
 
@@ -101,6 +112,7 @@ const visible = computed({
 const tasks = ref<MonitorTaskWithSPC[]>([]);
 const loading = ref(false);
 const chartInstances: Record<number, echarts.ECharts> = {};
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 const formatTime = (time: string | null) => {
   if (!time) return '从未运行';
@@ -158,6 +170,58 @@ const renderChart = (taskId: number, data: number[], chartType: string, subgroup
   };
   
   chart.setOption(option);
+};
+
+// 增量更新图表（只刷当前卡片，不影响其他实例）
+const updateChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
+  const chart = chartInstances[taskId];
+  if (!chart) {
+    // 实例不存在（卡片首次有数据），走完整初始化
+    renderChart(taskId, data, chartType, subgroupSize, confidenceLevel);
+    return;
+  }
+  const chartData = calculateSPCData(data, chartType, subgroupSize, confidenceLevel);
+  chart.setOption({
+    xAxis: { data: chartData.labels },
+    series: chartData.series,
+  }, { replaceMerge: ['series'] });
+};
+
+// 10s 轮询：自动刷新所有卡片的最新数据（不走 loadTasks 避免全局重渲染）
+const startPolling = async () => {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    if (!props.visible || tasks.value.length === 0) return;
+    try {
+      const res = await listMonitorTasks(0, 100);
+      const freshMap = new Map((res.data.items || []).map((t: any) => [t.id, t]));
+
+      for (let i = 0; i < tasks.value.length; i++) {
+        const fresh = freshMap.get(tasks.value[i].id);
+        if (!fresh) continue;
+        const changed =
+          JSON.stringify(fresh.last_run_at) !== JSON.stringify(tasks.value[i].last_run_at) ||
+          JSON.stringify(fresh.latest_data) !== JSON.stringify(tasks.value[i].latest_data) ||
+          fresh.has_anomaly !== tasks.value[i].has_anomaly ||
+          fresh.is_active !== tasks.value[i].is_active;
+        if (!changed) continue;
+
+        tasks.value[i] = { ...tasks.value[i], ...fresh };
+        if (fresh.latest_data && fresh.latest_data.length > 0 && fresh.chart_type) {
+          updateChart(tasks.value[i].id, fresh.latest_data, fresh.chart_type, fresh.subgroup_size, fresh.confidence_level);
+        }
+      }
+    } catch (e) {
+      console.error('轮询刷新失败', e);
+    }
+  }, 10000);
+};
+
+const stopPolling = () => {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
 };
 
 // 计算SPC数据
@@ -329,13 +393,47 @@ const handleFullscreen = (taskId: number) => {
   container.requestFullscreen?.();
 };
 
+// 单卡刷新：只更新当前卡片数据，增量 setOption，不影响其他卡片
 const handleRefresh = async (taskId: number) => {
+  const idx = tasks.value.findIndex(t => t.id === taskId);
+  if (idx === -1) return;
+
   try {
+    // 1. 调用后端刷新 API
     await refreshMonitorTask(taskId);
     message.success('刷新成功');
-    await loadTasks();
+
+    // 2. 从列表接口只取该任务最新数据（避免全局重渲染）
+    const res = await listMonitorTasks(0, 100);
+    const fresh = (res.data.items || []).find((t: any) => t.id === taskId);
+    if (!fresh) return;
+
+    // 3. 合并更新到当前任务（保留图表相关字段）
+    tasks.value[idx] = {
+      ...tasks.value[idx],
+      is_active: fresh.is_active,
+      last_run_at: fresh.last_run_at,
+      has_anomaly: fresh.has_anomaly,
+      latest_data: fresh.latest_data,
+    };
+
+    // 4. 增量更新图表（只刷当前卡片）
+    const t = tasks.value[idx];
+    if (t.latest_data && t.latest_data.length > 0 && t.chart_type) {
+      updateChart(taskId, t.latest_data, t.chart_type, t.subgroup_size, t.confidence_level);
+    }
   } catch (error) {
     message.error('刷新失败');
+  }
+};
+
+const handleToggle = async (taskId: number, isActive: boolean) => {
+  try {
+    const res = await toggleMonitorTask(taskId);
+    message.success(isActive ? '监控任务已暂停' : '监控任务已启动');
+    await loadTasks();
+  } catch (error) {
+    message.error(isActive ? '暂停失败' : '启动失败');
   }
 };
 
@@ -359,7 +457,9 @@ const handleDelete = async (taskId: number) => {
 watch(() => props.visible, (val) => {
   if (val) {
     loadTasks();
+    startPolling();
   } else {
+    stopPolling();
     // 关闭弹窗时销毁所有图表实例释放内存
     Object.values(chartInstances).forEach(chart => chart.dispose());
     Object.keys(chartInstances).forEach(key => delete chartInstances[Number(key)]);

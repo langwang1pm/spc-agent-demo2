@@ -230,6 +230,30 @@ async def delete_monitor_task(
     return ApiResponse(success=True, message="监控任务删除成功")
 
 
+@router.post("/tasks/{task_id}/toggle", response_model=ApiResponse)
+async def toggle_monitor_task(
+    task_id: int,
+    db: Session = Depends(get_db)
+):
+    """启动/暂停监控任务"""
+    task = db.query(MonitorTask).filter(MonitorTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="监控任务不存在")
+    
+    if task.is_active:
+        # 暂停
+        task.is_active = False
+        remove_monitor_job(task_id)
+        db.commit()
+        return ApiResponse(success=True, message="监控任务已暂停", data={"id": task_id, "is_active": False})
+    else:
+        # 启动
+        task.is_active = True
+        add_monitor_job(task_id, task.interval_seconds)
+        db.commit()
+        return ApiResponse(success=True, message="监控任务已启动", data={"id": task_id, "is_active": True})
+
+
 @router.get("/running", response_model=ApiResponse)
 async def list_running_tasks():
     """获取正在运行的监控任务"""

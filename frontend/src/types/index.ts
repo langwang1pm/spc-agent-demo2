@@ -115,6 +115,10 @@ export interface MonitorTask {
   last_run_at?: string;
   last_result?: Record<string, any>;  // 简略结果
   spc_result?: SPCResult;              // 完整SPC数据，用于渲染图表
+  latest_data?: number[] | null;       // 最新查询数据（一维数组）
+  chart_type?: ChartType | null;       // 关联分析配置的图表类型
+  subgroup_size?: number;              // 关联分析配置的子组大小
+  confidence_level?: ConfidenceLevel | null; // 关联分析配置的置信水平
   has_anomaly: boolean;
   created_at: string;
 }

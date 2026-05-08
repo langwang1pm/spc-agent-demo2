@@ -42,6 +42,11 @@ export const deleteMonitorTask = (taskId: number) => {
   return api.delete<ApiResponse<null>>(`/monitor/tasks/${taskId}`);
 };
 
+// 启动/暂停监控任务
+export const toggleMonitorTask = (taskId: number) => {
+  return api.post<ApiResponse<{ id: number; is_active: boolean }>>(`/monitor/tasks/${taskId}/toggle`);
+};
+
 // 获取正在运行的任务
 export const listRunningTasks = () => {
   return api.get<ApiResponse<{ count: number; tasks: any[] }>>('/monitor/running');
