@@ -51,3 +51,45 @@ export const toggleMonitorTask = (taskId: number) => {
 export const listRunningTasks = () => {
   return api.get<ApiResponse<{ count: number; tasks: any[] }>>('/monitor/running');
 };
+
+// 获取监控任务的异常记录列表
+export const getTaskAnomalies = (
+  taskId: number,
+  isNewData?: boolean | null,
+  skip = 0,
+  limit = 50
+) => {
+  const params: any = { skip, limit };
+  if (isNewData !== null && isNewData !== undefined) {
+    params.is_new_data = isNewData;
+  }
+  return api.get<ApiResponse<{
+    total: number;
+    items: AnomalyRecord[];
+  }>>(`/monitor/tasks/${taskId}/anomalies`, { params });
+};
+
+// 获取单个异常记录详情
+export const getAnomalyDetail = (anomalyId: number) => {
+  return api.get<ApiResponse<AnomalyRecord>>(`/monitor/anomalies/${anomalyId}`);
+};
+
+// 异常记录类型定义
+export interface AnomalyRecord {
+  id: number;
+  monitor_task_id?: number;
+  detected_at: string;
+  anomaly_type: string | null;
+  anomaly_data: Record<string, any> | null;
+  context_data: Record<string, any> | null;
+  is_new_data: boolean;
+  new_data_count: number | null;
+  data_snapshot_before: number[] | null;
+  new_data_indices: number[] | null;
+  silence_until: string | null;
+  alert_type: string | null;
+  related_anomaly_ids: number[] | null;
+  feishu_notified: boolean;
+  notified_at: string | null;
+  created_at?: string;
+}

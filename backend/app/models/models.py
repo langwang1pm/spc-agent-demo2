@@ -117,6 +117,7 @@ class MonitorTask(Base):
     
     # 监控配置
     interval_seconds = Column(Integer, nullable=False, default=10, comment="监控间隔（秒）")
+    silence_window_seconds = Column(Integer, nullable=False, default=300, comment="静默窗口（秒），告警去重间隔")
     is_active = Column(Boolean, default=True, comment="是否激活")
     
     # 运行状态
@@ -150,6 +151,15 @@ class AnomalyRecord(Base):
     anomaly_type = Column(String(100), nullable=True, comment="异常类型")
     anomaly_data = Column(JSON, nullable=True, comment="异常数据")
     context_data = Column(JSON, nullable=True, comment="上下文数据（前后10组数据）")
+    
+    # 新增数据异常相关字段
+    is_new_data = Column(Boolean, default=False, nullable=False, comment="是否为新增数据产生的异常")
+    new_data_count = Column(Integer, nullable=True, comment="本次新增的数据点总数")
+    data_snapshot_before = Column(JSON, nullable=True, comment="异常检测前的数据快照，一维数组")
+    new_data_indices = Column(JSON, nullable=True, comment="新增数据索引范围 [start, end)")
+    silence_until = Column(DateTime(timezone=True), nullable=True, comment="静默截止时间")
+    alert_type = Column(String(50), nullable=True, comment="告警类型")
+    related_anomaly_ids = Column(JSON, nullable=True, comment="关联的历史异常ID列表")
     
     # 通知状态
     feishu_notified = Column(Boolean, default=False, comment="是否已发送飞书通知")

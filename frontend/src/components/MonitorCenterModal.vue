@@ -2,7 +2,7 @@
   <a-modal
     v-model:open="visible"
     title="监控中心"
-    width="1000px"
+    width="1200px"
     :footer="null"
   >
     <div class="monitor-center">
@@ -24,6 +24,10 @@
                   <PlayCircleOutlined v-else />
                 </template>
                 {{ task.is_active ? '暂停' : '启动' }}
+              </a-button>
+              <a-button size="small" @click="handleViewAnomalies(task.id)" :disabled="!task.has_anomaly">
+                <template #icon><WarningOutlined /></template>
+                异常记录
               </a-button>
               <a-button size="small" @click="handleExport(task.id)" :disabled="!task.latest_data">
                 <template #icon><ExportOutlined /></template>
@@ -71,17 +75,115 @@
       </div>
       <div v-else class="empty-state">
         <p>暂无监控任务</p>
-        <p class="hint">在控制图区域点击"监控"按钮创建监控任务</p>
+        <p class="hint">在控制图区域点击“监控”按钮创建监控任务</p>
       </div>
     </div>
+
+    <!-- 异常记录弹窗 -->
+    <a-modal
+      v-model:open="showAnomalyModal"
+      :title="`异常记录 - ${currentTaskName}`"
+      width="900px"
+      :footer="null"
+    >
+      <div class="anomaly-modal-content">
+        <!-- 筛选 -->
+        <div class="anomaly-filter">
+          <a-radio-group v-model:value="anomalyFilter" @change="loadAnomalies">
+            <a-radio-button :value="null">全部</a-radio-button>
+            <a-radio-button :value="true">新增异常</a-radio-button>
+            <a-radio-button :value="false">历史异常</a-radio-button>
+          </a-radio-group>
+        </div>
+        
+        <!-- 异常列表 -->
+        <a-table
+          :columns="anomalyColumns"
+          :data-source="anomalyRecords"
+          :loading="anomalyLoading"
+          :pagination="anomalyPagination"
+          @change="handleAnomalyTableChange"
+          size="small"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'is_new_data'">
+              <a-tag :color="record.is_new_data ? 'orange' : 'blue'">
+                {{ record.is_new_data ? '新增异常' : '历史异常' }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'anomaly_type'">
+              <span>{{ record.anomaly_type || '-' }}</span>
+            </template>
+            <template v-else-if="column.key === 'detected_at'">
+              <span>{{ formatTime(record.detected_at) }}</span>
+            </template>
+            <template v-else-if="column.key === 'feishu_notified'">
+              <a-tag :color="record.feishu_notified ? 'green' : 'default'">
+                {{ record.feishu_notified ? '已通知' : '未通知' }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'action'">
+              <a-button size="small" type="link" @click="handleViewAnomalyDetail(record)">
+                查看详情
+              </a-button>
+            </template>
+          </template>
+        </a-table>
+      </div>
+    </a-modal>
+
+    <!-- 异常详情弹窗 -->
+    <a-modal
+      v-model:open="showAnomalyDetailModal"
+      title="异常详情"
+      width="700px"
+      :footer="null"
+    >
+      <div v-if="currentAnomaly" class="anomaly-detail">
+        <a-descriptions :column="2" bordered size="small">
+          <a-descriptions-item label="异常ID">{{ currentAnomaly.id }}</a-descriptions-item>
+          <a-descriptions-item label="检测时间">{{ formatTime(currentAnomaly.detected_at) }}</a-descriptions-item>
+          <a-descriptions-item label="异常类型">{{ currentAnomaly.anomaly_type || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="异常分类">
+            <a-tag :color="currentAnomaly.is_new_data ? 'orange' : 'blue'">
+              {{ currentAnomaly.is_new_data ? '新增异常' : '历史异常' }}
+            </a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="新增数据点数" v-if="currentAnomaly.is_new_data">
+            {{ currentAnomaly.new_data_count || 0 }}
+          </a-descriptions-item>
+          <a-descriptions-item label="新增数据索引" v-if="currentAnomaly.new_data_indices">
+            {{ currentAnomaly.new_data_indices?.join(', ') }}
+          </a-descriptions-item>
+          <a-descriptions-item label="飞书通知">
+            <a-tag :color="currentAnomaly.feishu_notified ? 'green' : 'default'">
+              {{ currentAnomaly.feishu_notified ? '已通知' : '未通知' }}
+            </a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="通知时间">
+            {{ formatTime(currentAnomaly.notified_at) || '-' }}
+          </a-descriptions-item>
+        </a-descriptions>
+        
+        <div class="anomaly-data-section" v-if="currentAnomaly.anomaly_data">
+          <h4>异常数据</h4>
+          <pre class="json-display">{{ JSON.stringify(currentAnomaly.anomaly_data, null, 2) }}</pre>
+        </div>
+        
+        <div class="anomaly-data-section" v-if="currentAnomaly.context_data">
+          <h4>上下文数据</h4>
+          <pre class="json-display">{{ JSON.stringify(currentAnomaly.context_data, null, 2) }}</pre>
+        </div>
+      </div>
+    </a-modal>
   </a-modal>
 </template>
 
 <script setup lang="ts">
 import { ref, watch, computed, nextTick } from 'vue';
 import { message } from 'ant-design-vue';
-import { listMonitorTasks, refreshMonitorTask, deleteMonitorTask, toggleMonitorTask } from '@/api/monitor';
-import { ExportOutlined, FullscreenOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons-vue';
+import { listMonitorTasks, refreshMonitorTask, deleteMonitorTask, toggleMonitorTask, getTaskAnomalies, getAnomalyDetail, type AnomalyRecord } from '@/api/monitor';
+import { ExportOutlined, FullscreenOutlined, PlayCircleOutlined, PauseCircleOutlined, WarningOutlined } from '@ant-design/icons-vue';
 import dayjs from 'dayjs';
 import * as echarts from 'echarts';
 
@@ -114,6 +216,31 @@ const loading = ref(false);
 const chartInstances: Record<number, echarts.ECharts> = {};
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+// 异常记录相关状态
+const showAnomalyModal = ref(false);
+const showAnomalyDetailModal = ref(false);
+const currentTaskId = ref<number | null>(null);
+const currentTaskName = ref('');
+const anomalyRecords = ref<AnomalyRecord[]>([]);
+const anomalyLoading = ref(false);
+const anomalyFilter = ref<boolean | null>(null);
+const currentAnomaly = ref<AnomalyRecord | null>(null);
+const anomalyPagination = ref({
+  current: 1,
+  pageSize: 10,
+  total: 0,
+});
+
+// 异常记录表格列定义
+const anomalyColumns = [
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
+  { title: '检测时间', dataIndex: 'detected_at', key: 'detected_at', width: 160 },
+  { title: '异常类型', dataIndex: 'anomaly_type', key: 'anomaly_type', width: 100 },
+  { title: '分类', dataIndex: 'is_new_data', key: 'is_new_data', width: 100 },
+  { title: '飞书通知', dataIndex: 'feishu_notified', key: 'feishu_notified', width: 80 },
+  { title: '操作', key: 'action', width: 80 },
+];
+
 const formatTime = (time: string | null) => {
   if (!time) return '从未运行';
   return dayjs(time).format('YYYY-MM-DD HH:mm:ss');
@@ -124,7 +251,7 @@ const loadTasks = async () => {
   try {
     const res = await listMonitorTasks();
     tasks.value = res.data.items || [];
-    
+
     // 加载完成后渲染图表
     await nextTick();
     tasks.value.forEach(task => {
@@ -142,22 +269,22 @@ const loadTasks = async () => {
 const renderChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
   const container = document.getElementById(`chart-${taskId}`);
   if (!container || !data || data.length === 0) return;
-  
+
   // 销毁旧实例
   if (chartInstances[taskId]) {
     chartInstances[taskId].dispose();
   }
-  
+
   // 创建新实例
   const chart = echarts.init(container);
   chartInstances[taskId] = chart;
-  
+
   // 计算控制图数据
   const chartData = calculateSPCData(data, chartType, subgroupSize, confidenceLevel);
-  
+
   const option = {
-    title: { 
-      text: getChartTitle(chartType), 
+    title: {
+      text: getChartTitle(chartType),
       left: 'center',
       textStyle: { fontSize: 12 }
     },
@@ -168,15 +295,15 @@ const renderChart = (taskId: number, data: number[], chartType: string, subgroup
     yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
     series: chartData.series,
   };
-  
+
   chart.setOption(option);
 };
 
-// 增量更新图表（只刷当前卡片，不影响其他实例）
+// 增量更新图表(只刷当前卡片,不影响其他实例)
 const updateChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
   const chart = chartInstances[taskId];
   if (!chart) {
-    // 实例不存在（卡片首次有数据），走完整初始化
+    // 实例不存在(卡片首次有数据),走完整初始化
     renderChart(taskId, data, chartType, subgroupSize, confidenceLevel);
     return;
   }
@@ -187,7 +314,7 @@ const updateChart = (taskId: number, data: number[], chartType: string, subgroup
   }, { replaceMerge: ['series'] });
 };
 
-// 10s 轮询：自动刷新所有卡片的最新数据（不走 loadTasks 避免全局重渲染）
+// 10s 轮询:自动刷新所有卡片的最新数据(不走 loadTasks 避免全局重渲染)
 const startPolling = async () => {
   stopPolling();
   pollTimer = setInterval(async () => {
@@ -228,7 +355,7 @@ const stopPolling = () => {
 const calculateSPCData = (data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
   const labels = data.map((_, i) => `${i + 1}`);
   const series: any[] = [];
-  
+
   // 根据图表类型计算
   if (chartType === 'xbar_r' || chartType === 'xbar_s') {
     // 均值图
@@ -271,23 +398,23 @@ const calculateXBar = (data: number[], subgroupSize: number, confidenceLevel: st
   const numGroups = Math.floor(data.length / subgroupSize);
   const means: number[] = [];
   const ranges: number[] = [];
-  
+
   for (let i = 0; i < numGroups; i++) {
     const group = data.slice(i * subgroupSize, (i + 1) * subgroupSize);
     means.push(group.reduce((a, b) => a + b, 0) / subgroupSize);
     ranges.push(Math.max(...group) - Math.min(...group));
   }
-  
+
   const overallMean = means.reduce((a, b) => a + b, 0) / means.length;
   const avgRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
-  
-  // A2因子（子组大小为5时，A2=0.577）
+
+  // A2因子(子组大小为5时,A2=0.577)
   const A2Factors: Record<number, number> = { 2: 1.880, 3: 1.023, 4: 0.729, 5: 0.577, 6: 0.483, 7: 0.419, 8: 0.373, 9: 0.337, 10: 0.308 };
   const A2 = A2Factors[subgroupSize] || 0.577;
-  
+
   const ucl = overallMean + A2 * avgRange;
   const lcl = overallMean - A2 * avgRange;
-  
+
   return { means, ucl, cl: overallMean, lcl };
 };
 
@@ -298,15 +425,15 @@ const calculateIMR = (data: number[], confidenceLevel: string | null) => {
   for (let i = 1; i < data.length; i++) {
     movingRanges.push(Math.abs(data[i] - data[i - 1]));
   }
-  
+
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const avgMR = movingRanges.slice(1).reduce((a, b) => a + b, 0) / (movingRanges.length - 1);
-  
-  // d2因子（n=2时，d2=1.128）
+
+  // d2因子(n=2时,d2=1.128)
   const d2 = 1.128;
   const ucl = mean + 3 * avgMR / d2;
   const lcl = mean - 3 * avgMR / d2;
-  
+
   return { values, ucl, cl: mean, lcl };
 };
 
@@ -329,17 +456,17 @@ const getChartTitle = (chartType: string) => {
 const handleExport = (taskId: number) => {
   const task = tasks.value.find(t => t.id === taskId);
   if (!task) return;
-  
+
   const chart = chartInstances[taskId];
   if (!chart) {
-    // 如果图表实例不存在，创建一个临时图表来导出
+    // 如果图表实例不存在,创建一个临时图表来导出
     const tempContainer = document.createElement('div');
     tempContainer.style.position = 'absolute';
     tempContainer.style.left = '-9999px';
     tempContainer.style.width = '1200px';
     tempContainer.style.height = '600px';
     document.body.appendChild(tempContainer);
-    
+
     const tempChart = echarts.init(tempContainer);
     const chartData = calculateSPCData(task.latest_data!, task.chart_type!, task.subgroup_size, task.confidence_level);
     tempChart.setOption({
@@ -351,18 +478,18 @@ const handleExport = (taskId: number) => {
       yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
       series: chartData.series,
     });
-    
+
     const url = tempChart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' });
     const a = document.createElement('a');
     a.href = url;
     a.download = `${task.name || 'monitor-chart'}.png`;
     a.click();
-    
+
     tempChart.dispose();
     document.body.removeChild(tempContainer);
     return;
   }
-  
+
   const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' });
   const a = document.createElement('a');
   a.href = url;
@@ -373,27 +500,27 @@ const handleExport = (taskId: number) => {
 const handleFullscreen = (taskId: number) => {
   const container = document.getElementById(`chart-${taskId}`);
   if (!container) return;
-  
-  // 注册一次性全屏事件：进入时放大，退出时缩回
+
+  // 注册一次性全屏事件:进入时放大,退出时缩回
   const onFullscreenChange = async () => {
     await nextTick();
     const chart = chartInstances[taskId];
     if (!chart) return;
-    
+
     if (document.fullscreenElement) {
-      // 进入全屏：图表撑满屏幕
+      // 进入全屏:图表撑满屏幕
       chart.resize({ width: container.clientWidth, height: container.clientHeight });
     } else {
-      // 退出全屏：还原到原始容器尺寸
+      // 退出全屏:还原到原始容器尺寸
       chart.resize({ width: container.clientWidth, height: 200 });
     }
   };
-  
+
   document.addEventListener('fullscreenchange', onFullscreenChange);
   container.requestFullscreen?.();
 };
 
-// 单卡刷新：只更新当前卡片数据，增量 setOption，不影响其他卡片
+// 单卡刷新:只更新当前卡片数据,增量 setOption,不影响其他卡片
 const handleRefresh = async (taskId: number) => {
   const idx = tasks.value.findIndex(t => t.id === taskId);
   if (idx === -1) return;
@@ -403,12 +530,12 @@ const handleRefresh = async (taskId: number) => {
     await refreshMonitorTask(taskId);
     message.success('刷新成功');
 
-    // 2. 从列表接口只取该任务最新数据（避免全局重渲染）
+    // 2. 从列表接口只取该任务最新数据(避免全局重渲染)
     const res = await listMonitorTasks(0, 100);
     const fresh = (res.data.items || []).find((t: any) => t.id === taskId);
     if (!fresh) return;
 
-    // 3. 合并更新到当前任务（保留图表相关字段）
+    // 3. 合并更新到当前任务(保留图表相关字段)
     tasks.value[idx] = {
       ...tasks.value[idx],
       is_active: fresh.is_active,
@@ -417,7 +544,7 @@ const handleRefresh = async (taskId: number) => {
       latest_data: fresh.latest_data,
     };
 
-    // 4. 增量更新图表（只刷当前卡片）
+    // 4. 增量更新图表(只刷当前卡片)
     const t = tasks.value[idx];
     if (t.latest_data && t.latest_data.length > 0 && t.chart_type) {
       updateChart(taskId, t.latest_data, t.chart_type, t.subgroup_size, t.confidence_level);
@@ -441,16 +568,70 @@ const handleDelete = async (taskId: number) => {
   try {
     await deleteMonitorTask(taskId);
     message.success('删除成功');
-    
+
     // 销毁图表实例
     if (chartInstances[taskId]) {
       chartInstances[taskId].dispose();
       delete chartInstances[taskId];
     }
-    
+
     await loadTasks();
   } catch (error) {
     message.error('删除失败');
+  }
+};
+
+// 查看异常记录
+const handleViewAnomalies = async (taskId: number) => {
+  const task = tasks.value.find(t => t.id === taskId);
+  if (!task) return;
+  
+  currentTaskId.value = taskId;
+  currentTaskName.value = task.name;
+  showAnomalyModal.value = true;
+  
+  await loadAnomalies();
+};
+
+// 加载异常记录
+const loadAnomalies = async () => {
+  if (!currentTaskId.value) return;
+  
+  anomalyLoading.value = true;
+  try {
+    const skip = (anomalyPagination.value.current - 1) * anomalyPagination.value.pageSize;
+    const res = await getTaskAnomalies(
+      currentTaskId.value,
+      anomalyFilter.value,
+      skip,
+      anomalyPagination.value.pageSize
+    );
+    anomalyRecords.value = res.data.items || [];
+    anomalyPagination.value.total = res.data.total || 0;
+  } catch (error) {
+    console.error('加载异常记录失败:', error);
+    message.error('加载异常记录失败');
+  } finally {
+    anomalyLoading.value = false;
+  }
+};
+
+// 异常表格分页变化
+const handleAnomalyTableChange = (pagination: any) => {
+  anomalyPagination.value.current = pagination.current;
+  anomalyPagination.value.pageSize = pagination.pageSize;
+  loadAnomalies();
+};
+
+// 查看异常详情
+const handleViewAnomalyDetail = async (record: AnomalyRecord) => {
+  try {
+    const res = await getAnomalyDetail(record.id);
+    currentAnomaly.value = res.data;
+    showAnomalyDetailModal.value = true;
+  } catch (error) {
+    console.error('加载异常详情失败:', error);
+    message.error('加载异常详情失败');
   }
 };
 
@@ -466,7 +647,7 @@ watch(() => props.visible, (val) => {
   }
 });
 
-// 监听全屏变化，重新渲染图表（解决全屏后图表尺寸异常）
+// 监听全屏变化,重新渲染图表(解决全屏后图表尺寸异常)
 if (typeof document !== 'undefined') {
   document.addEventListener('fullscreenchange', async () => {
     if (!document.fullscreenElement) {
@@ -575,5 +756,37 @@ if (typeof document !== 'undefined') {
 .hint {
   font-size: 12px;
   margin-top: 8px;
+}
+
+/* 异常记录相关样式 */
+.anomaly-modal-content {
+  min-height: 300px;
+}
+
+.anomaly-filter {
+  margin-bottom: 16px;
+}
+
+.anomaly-detail {
+  padding: 16px 0;
+}
+
+.anomaly-data-section {
+  margin-top: 16px;
+}
+
+.anomaly-data-section h4 {
+  margin-bottom: 8px;
+  color: #333;
+}
+
+.json-display {
+  background: #f5f5f5;
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
 }
 </style>

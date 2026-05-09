@@ -166,6 +166,7 @@ class MonitorTaskCreate(BaseModel):
     subgroup_size: int = Field(..., description="子组大小")
     confidence_level: ConfidenceLevel = Field(..., description="置信水平")
     interval_seconds: int = Field(default=10, ge=1, le=3600, description="监控间隔（秒）")
+    silence_window_seconds: int = Field(default=300, ge=0, le=3600, description="静默窗口（秒），告警去重间隔，默认300秒")
 
 
 class MonitorTaskResponse(BaseModel):
@@ -179,8 +180,35 @@ class MonitorTaskResponse(BaseModel):
     last_run_at: Optional[datetime] = None
     last_result: Optional[Dict[str, Any]] = None
     has_anomaly: bool
+    latest_data: Optional[List[float]] = None  # 新增：一维数组快照
+    silence_window_seconds: int = 300          # 静默窗口（秒）
     created_at: datetime
     updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ==================== 异常记录相关 ====================
+
+class AnomalyRecordResponse(BaseModel):
+    """异常记录响应"""
+    id: int
+    monitor_task_id: int
+    detected_at: datetime
+    anomaly_type: Optional[str] = None
+    anomaly_data: Optional[Dict[str, Any]] = None
+    context_data: Optional[Dict[str, Any]] = None
+    is_new_data: bool = False
+    new_data_count: Optional[int] = None
+    data_snapshot_before: Optional[List[float]] = None
+    new_data_indices: Optional[List[int]] = None
+    silence_until: Optional[datetime] = None
+    alert_type: Optional[str] = None
+    related_anomaly_ids: Optional[List[int]] = None
+    feishu_notified: bool = False
+    notified_at: Optional[datetime] = None
+    created_at: datetime
 
     class Config:
         from_attributes = True

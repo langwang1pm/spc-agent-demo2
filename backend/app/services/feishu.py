@@ -54,17 +54,30 @@ class FeishuService:
             print("[WARN] Feishu Webhook URL not configured")
             return False
         
+        # 处理卡片消息：如果 content 已经是完整的卡片结构（包含 card 键），则提取内层
+        if msg_type in ["card", "interactive"] and isinstance(content, dict):
+            card_content = content.get("card", content)
+        else:
+            card_content = content if msg_type in ["card", "interactive"] else None
+        
         payload = {
             "msg_type": msg_type,
             "content": content if msg_type == "text" else None,
-            "card": content if msg_type in ["card", "interactive"] else None
+            "card": card_content
         }
+        
+        print(f"[DEBUG] Feishu payload: {json.dumps(payload, ensure_ascii=False)[:500]}...")
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(self.webhook_url, json=payload)
                 result = response.json()
-                return result.get("code", -1) == 0 or response.status_code == 200
+                if result.get("code") == 0:
+                    print(f"[INFO] Feishu message sent successfully")
+                    return True
+                else:
+                    print(f"[ERROR] Feishu API error: {result}")
+                    return False
         except Exception as e:
             print(f"[ERROR] Failed to send Feishu message: {e}")
             return False
@@ -189,6 +202,134 @@ class FeishuService:
         # 这里只是一个框架，实际使用时需要完善
         return await self.send_webhook_message("interactive", card)
     
+    async def send_new_data_alarm(
+        self,
+        task_name: str,
+        data_source_name: str,
+        new_data_count: int,
+        new_out_of_limit: List[Dict[str, Any]],
+        new_rules: List[Dict[str, Any]],
+        control_limits: Dict[str, float],
+        chart_type: str,
+        detected_at: str,
+        subgroup_size: int = 5
+    ) -> bool:
+        """
+        发送新增数据异常告警到飞书群
+        
+        Args:
+            task_name: 监控任务名称
+            data_source_name: 数据源名称
+            new_data_count: 新增数据点总数
+            new_out_of_limit: 超限异常列表 [{"index": 25, "value": 10.85, "limit_type": "UCL", "limit_value": 10.72}]
+            new_rules: 判异规则触发列表 [{"rule_name": "Rule 4", "description": "连续8个点在中心线上方", "points": [...]}]
+            control_limits: 控制限 {"ucl": 10.72, "cl": 10.50, "lcl": 10.28}
+            chart_type: 图表类型
+            detected_at: 检测时间
+            subgroup_size: 子组大小
+        
+        Returns:
+            是否发送成功
+        """
+        # 图表类型名称映射
+        chart_names = {
+            "xbar_r": "X̄-R 控制图",
+            "xbar_s": "X̄-S 控制图",
+            "i_mr": "I-MR 控制图",
+            "p_chart": "p 控制图",
+            "np_chart": "np 控制图",
+            "c_chart": "c 控制图",
+            "u_chart": "u 控制图"
+        }
+        chart_name = chart_names.get(chart_type, chart_type.upper())
+        
+        # 异常点数
+        anomaly_count = len(new_out_of_limit) + len(new_rules)
+        
+        # 构建异常详情文本
+        anomaly_details = []
+        
+        # 超限异常
+        for item in new_out_of_limit:
+            idx = item.get("index", 0)
+            val = item.get("value", 0)
+            limit_type = item.get("limit_type", "UCL")
+            limit_val = item.get("limit_value", 0)
+            if chart_type in ["xbar_r", "xbar_s"]:
+                anomaly_details.append(f"- 第 {idx} 组，均值 = {val:.4g}，超出 {limit_type}({limit_val:.4g})")
+            elif chart_type == "i_mr":
+                anomaly_details.append(f"- 第 {idx} 点，单值 = {val:.4g}，超出 {limit_type}({limit_val:.4g})")
+            else:
+                anomaly_details.append(f"- 第 {idx} 点，值 = {val:.4g}，超出 {limit_type}({limit_val:.4g})")
+        
+        # 判异规则
+        for rule in new_rules:
+            rule_name = rule.get("rule_name", "")
+            description = rule.get("description", "")
+            anomaly_details.append(f"- 触犯规则：{rule_name} - {description}")
+        
+        
+        anomaly_detail_text = "\n".join(anomaly_details) if anomaly_details else "无"
+        
+        # 控制限文本
+        ucl = control_limits.get("ucl", 0)
+        cl = control_limits.get("cl", 0)
+        lcl = control_limits.get("lcl", 0)
+        control_limit_text = f"UCL = {ucl:.4g} | CL = {cl:.4g} | LCL = {lcl:.4g}"
+        
+        # 构建飞书卡片消息
+        card = {
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "🚨 SPC 新增数据异常告警"
+                    },
+                    "template": "red"
+                },
+                "elements": [
+                    # 基本信息
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**任务名称：** {task_name}\n**检测时间：** {detected_at}\n**数据源：** {data_source_name}\n**图表类型：** {chart_name}"
+                        }
+                    },
+                    {"tag": "hr"},
+                    # 新增数据概况
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**【新增数据概况】**\n新增数据点数：{new_data_count} 个\n异常数据点数：{anomaly_count} 个"
+                        }
+                    },
+                    {"tag": "hr"},
+                    # 异常详情
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**【异常详情】**\n{anomaly_detail_text}"
+                        }
+                    },
+                    {"tag": "hr"},
+                    # 控制限
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**【控制限】**\n{control_limit_text}"
+                        }
+                    }
+                ]
+            }
+        }
+        
+        return await self.send_webhook_message("interactive", card)
+
     async def send_monitor_summary(self, task_data: Dict[str, Any]) -> bool:
         """
         发送监控任务汇总消息
@@ -232,6 +373,31 @@ class FeishuService:
 
 # 全局实例
 feishu_service = FeishuService()
+
+
+async def send_new_data_alarm(
+    task_name: str,
+    data_source_name: str,
+    new_data_count: int,
+    new_out_of_limit: List[Dict[str, Any]],
+    new_rules: List[Dict[str, Any]],
+    control_limits: Dict[str, float],
+    chart_type: str,
+    detected_at: str,
+    subgroup_size: int = 5
+) -> bool:
+    """发送新增数据异常告警"""
+    return await feishu_service.send_new_data_alarm(
+        task_name=task_name,
+        data_source_name=data_source_name,
+        new_data_count=new_data_count,
+        new_out_of_limit=new_out_of_limit,
+        new_rules=new_rules,
+        control_limits=control_limits,
+        chart_type=chart_type,
+        detected_at=detected_at,
+        subgroup_size=subgroup_size
+    )
 
 
 async def send_alarm(anomaly_data: Dict[str, Any], 

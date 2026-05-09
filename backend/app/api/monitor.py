@@ -1,14 +1,15 @@
 """
 监控任务相关API
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.models import MonitorTask, DataSource, AnalysisConfig
+from app.models import MonitorTask, DataSource, AnalysisConfig, AnomalyRecord
 from app.schemas import MonitorTaskCreate, MonitorTaskResponse, ApiResponse
 from app.services.monitor import add_monitor_job, remove_monitor_job, run_monitor_task, get_running_tasks
 from app.services.system_query import get_system_data_values, SystemQueryError
 from datetime import datetime
+from typing import Optional
 import json
 
 router = APIRouter(prefix="/monitor", tags=["监控任务"])
@@ -264,5 +265,100 @@ async def list_running_tasks():
         data={
             "count": len(running),
             "tasks": running
+        }
+    )
+
+
+@router.get("/tasks/{task_id}/anomalies", response_model=ApiResponse)
+async def get_task_anomalies(
+    task_id: int,
+    is_new_data: Optional[bool] = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    获取监控任务的异常记录列表
+    
+    Args:
+        task_id: 监控任务ID
+        is_new_data: 筛选新增异常（True=新增异常，False=历史异常，None=全部）
+        skip: 分页偏移
+        limit: 每页数量
+    """
+    # 检查任务是否存在
+    task = db.query(MonitorTask).filter(MonitorTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="监控任务不存在")
+    
+    # 构建查询
+    query = db.query(AnomalyRecord).filter(AnomalyRecord.monitor_task_id == task_id)
+    
+    # 按新增异常筛选
+    if is_new_data is not None:
+        query = query.filter(AnomalyRecord.is_new_data == is_new_data)
+    
+    # 总数
+    total = query.count()
+    
+    # 分页查询，按检测时间倒序
+    records = query.order_by(AnomalyRecord.detected_at.desc()).offset(skip).limit(limit).all()
+    
+    return ApiResponse(
+        success=True,
+        data={
+            "total": total,
+            "items": [
+                {
+                    "id": r.id,
+                    "detected_at": r.detected_at.isoformat() if r.detected_at else None,
+                    "anomaly_type": r.anomaly_type,
+                    "anomaly_data": r.anomaly_data,
+                    "context_data": r.context_data,
+                    "is_new_data": r.is_new_data,
+                    "new_data_count": r.new_data_count,
+                    "data_snapshot_before": r.data_snapshot_before,
+                    "new_data_indices": r.new_data_indices,
+                    "silence_until": r.silence_until.isoformat() if r.silence_until else None,
+                    "alert_type": r.alert_type,
+                    "related_anomaly_ids": r.related_anomaly_ids,
+                    "feishu_notified": r.feishu_notified,
+                    "notified_at": r.notified_at.isoformat() if r.notified_at else None,
+                }
+                for r in records
+            ]
+        }
+    )
+
+
+@router.get("/anomalies/{anomaly_id}", response_model=ApiResponse)
+async def get_anomaly_detail(
+    anomaly_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取单个异常记录详情"""
+    record = db.query(AnomalyRecord).filter(AnomalyRecord.id == anomaly_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="异常记录不存在")
+    
+    return ApiResponse(
+        success=True,
+        data={
+            "id": record.id,
+            "monitor_task_id": record.monitor_task_id,
+            "detected_at": record.detected_at.isoformat() if record.detected_at else None,
+            "anomaly_type": record.anomaly_type,
+            "anomaly_data": record.anomaly_data,
+            "context_data": record.context_data,
+            "is_new_data": record.is_new_data,
+            "new_data_count": record.new_data_count,
+            "data_snapshot_before": record.data_snapshot_before,
+            "new_data_indices": record.new_data_indices,
+            "silence_until": record.silence_until.isoformat() if record.silence_until else None,
+            "alert_type": record.alert_type,
+            "related_anomaly_ids": record.related_anomaly_ids,
+            "feishu_notified": record.feishu_notified,
+            "notified_at": record.notified_at.isoformat() if record.notified_at else None,
+            "created_at": record.created_at.isoformat() if record.created_at else None,
         }
     )

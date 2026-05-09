@@ -87,6 +87,134 @@ def _estimate_constants(n: float) -> tuple:
     return (d2, d3, D3, D4, c4, A2, A3, B3, B4)
 
 
+# ================================================================
+# 独立函数：西电判异规则（支持 X̄-R / X̄-S / I-MR 等计量型图表）
+# 后续扩展计数型图表时，可在此文件中添加 switch-case 分支
+# ================================================================
+
+
+def check_western_electric_rules(
+    data: np.ndarray, cl: float, sigma: float
+) -> List[Dict[str, Any]]:
+    """
+    西电（Western Electric）判异规则通用检测函数。
+
+    适用于计量型控制图的均值/单值序列：
+      - X̄-R 图 → 均值序列
+      - X̄-S 图 → 均值序列
+      - I-MR 图 → 单值序列
+
+    计数型图表（p/np/c/u）暂不启用，可通过 chart_type 分支扩展。
+
+    规则列表：
+      Rule 1: 1个点超出3σ控制限
+      Rule 2: 连续2个点中有1个超出2σ控制限
+      Rule 3: 连续5个点中有4个超出1σ控制限
+      Rule 4: 连续8个点都在中心线同一侧
+      Rule 5: 连续6个点递增或递减
+
+    Args:
+        data:   一维数组（均值序列或单值序列）
+        cl:     中心线
+        sigma:  过程标准差估计值（sigma）
+
+    Returns:
+        List[Dict]: 违反规则列表，每条包含 rule / description / index / indices / value
+    """
+    violations = []
+    n = len(data)
+    if n < 2:
+        return violations
+
+    # 规则1: 1个点超出3σ控制限
+    ucl3 = cl + 3 * sigma
+    lcl3 = cl - 3 * sigma
+    for i, x in enumerate(data):
+        if x > ucl3 or x < lcl3:
+            violations.append({
+                "rule": "Rule 1",
+                "description": "1个点超出3σ控制限",
+                "index": i,
+                "value": float(x),
+                "limit_violated": "UCL" if x > ucl3 else "LCL"
+            })
+
+    # 规则2: 连续2个点中有1个超出2σ控制限
+    ucl2 = cl + 2 * sigma
+    lcl2 = cl - 2 * sigma
+    for i in range(n - 1):
+        out_2sigma = [data[i] > ucl2 or data[i] < lcl2,
+                      data[i+1] > ucl2 or data[i+1] < lcl2]
+        if any(out_2sigma):
+            # 仅记录触发点
+            trigger_idx = i if out_2sigma[0] else i + 1
+            violations.append({
+                "rule": "Rule 2",
+                "description": "连续2个点中有1个超出2σ控制限",
+                "indices": [i, i + 1],
+                "index": trigger_idx,
+                "value": float(data[trigger_idx])
+            })
+
+    # 规则3: 连续5个点中有4个超出1σ控制限
+    ucl1 = cl + sigma
+    lcl1 = cl - sigma
+    for i in range(n - 4):
+        segment = data[i:i + 5]
+        beyond = sum(1 for x in segment if x > ucl1 or x < lcl1)
+        if beyond >= 4:
+            violations.append({
+                "rule": "Rule 3",
+                "description": "连续5个点中有4个超出1σ控制限",
+                "indices": list(range(i, i + 5)),
+                "index": i,
+                "value": float(data[i])
+            })
+
+    # 规则4: 连续8个点都在中心线同一侧
+    for i in range(n - 7):
+        segment = data[i:i + 8]
+        if all(x > cl for x in segment) or all(x < cl for x in segment):
+            violations.append({
+                "rule": "Rule 4",
+                "description": "连续8个点都在中心线同一侧",
+                "indices": list(range(i, i + 8)),
+                "index": i,
+                "value": float(data[i])
+            })
+
+    # 规则5: 连续6个点递增或递减
+    for i in range(n - 5):
+        segment = data[i:i + 6]
+        increasing = all(segment[j] < segment[j + 1] for j in range(5))
+        decreasing = all(segment[j] > segment[j + 1] for j in range(5))
+        if increasing:
+            violations.append({
+                "rule": "Rule 5",
+                "description": "连续6个点递增",
+                "indices": list(range(i, i + 6)),
+                "index": i,
+                "value": float(data[i])
+            })
+        elif decreasing:
+            violations.append({
+                "rule": "Rule 5",
+                "description": "连续6个点递减",
+                "indices": list(range(i, i + 6)),
+                "index": i,
+                "value": float(data[i])
+            })
+
+    return violations
+
+
+# ================================================================
+# 支持判异规则的图表类型（计量型）
+# 后续扩展计数型时，在此列表追加对应 chart_type 即可
+# ================================================================
+RULES_SUPPORTED_CHART_TYPES = {"xbar_r", "xbar_s", "i_mr"}
+
+
 @dataclass
 class SPCResult:
     """SPC计算结果"""
@@ -313,6 +441,11 @@ class SPCCalculator:
                     "type": "out_of_control"
                 })
 
+        # 判异规则检测（通用函数，支持 X̄-S 均值序列）
+        rules_violations = self._check_western_electric_rules_on_sequence(
+            np.array(group_means), float(CL_X), float(sigma_s)
+        )
+
         # 统计结果
         flat_data = np.array([x for group in data for x in group], dtype=float)
         statistics = {
@@ -354,7 +487,7 @@ class SPCCalculator:
                 "UCL_S": float(UCL_S), "LCL_S": float(LCL_S), "CL_S": float(CL_S)
             },
             anomalies=anomalies,
-            rules_violations=[]
+            rules_violations=rules_violations
         )
 
     def _calculate_i_mr(self) -> SPCResult:
@@ -391,6 +524,11 @@ class SPCCalculator:
                     "value": float(x),
                     "type": "out_of_control"
                 })
+
+        # 判异规则检测（I-MR 图的单值序列）
+        rules_violations = self._check_western_electric_rules_on_sequence(
+            data, float(CL_I), float(sigma)
+        )
 
         # 统计结果
         statistics = {
@@ -432,7 +570,7 @@ class SPCCalculator:
                 "UCL_MR": float(UCL_MR), "LCL_MR": float(LCL_MR), "CL_MR": float(CL_MR)
             },
             anomalies=anomalies,
-            rules_violations=[]
+            rules_violations=rules_violations
         )
 
     def _calculate_p_chart(self) -> SPCResult:
@@ -753,74 +891,17 @@ class SPCCalculator:
 
     def _check_western_electric_rules(self, data: np.ndarray,
                                        cl: float, sigma: float) -> List[Dict[str, Any]]:
-        """西格玛规则检测(判异规则)"""
-        violations = []
-        n = len(data)
+        """西格玛规则检测(判异规则)，委托给独立函数"""
+        return check_western_electric_rules(data, cl, sigma)
 
-        # 规则1: 1个点超出3σ控制限
-        ucl = cl + 3 * sigma
-        lcl = cl - 3 * sigma
-        for i, x in enumerate(data):
-            if x > ucl or x < lcl:
-                violations.append({
-                    "rule": "Rule 1",
-                    "description": "1个点超出3σ控制限",
-                    "index": i,
-                    "value": float(x)
-                })
-
-        # 规则2: 连续2个点中有1个超出2σ控制限
-        ucl2 = cl + 2 * sigma
-        lcl2 = cl - 2 * sigma
-        for i in range(n - 1):
-            if (data[i] > ucl2 or data[i] < lcl2) or (data[i+1] > ucl2 or data[i+1] < lcl2):
-                if data[i] > ucl2 or data[i] < lcl2:
-                    violations.append({
-                        "rule": "Rule 2",
-                        "description": "连续2个点中有1个超出2σ控制限",
-                        "indices": [i, i+1]
-                    })
-
-        # 规则3: 连续5个点中有4个超出1σ控制限
-        ucl1 = cl + sigma
-        lcl1 = cl - sigma
-        for i in range(n - 4):
-            segment = data[i:i+5]
-            beyond_1sigma = sum(1 for x in segment if x > ucl1 or x < lcl1)
-            if beyond_1sigma >= 4:
-                violations.append({
-                    "rule": "Rule 3",
-                    "description": "连续5个点中有4个超出1σ控制限",
-                    "indices": list(range(i, i+5))
-                })
-
-        # 规则4: 连续8个点都在中心线同一侧
-        for i in range(n - 7):
-            segment = data[i:i+8]
-            if all(x > cl for x in segment) or all(x < cl for x in segment):
-                violations.append({
-                    "rule": "Rule 4",
-                    "description": "连续8个点都在中心线同一侧",
-                    "indices": list(range(i, i+8))
-                })
-
-        # 规则5: 连续6个点递增或递减
-        for i in range(n - 5):
-            segment = data[i:i+6]
-            if all(segment[j] < segment[j+1] for j in range(5)):
-                violations.append({
-                    "rule": "Rule 5",
-                    "description": "连续6个点递增",
-                    "indices": list(range(i, i+6))
-                })
-            elif all(segment[j] > segment[j+1] for j in range(5)):
-                violations.append({
-                    "rule": "Rule 5",
-                    "description": "连续6个点递减",
-                    "indices": list(range(i, i+6))
-                })
-
-        return violations
+    def _check_western_electric_rules_on_sequence(
+        self, sequence: np.ndarray, cl: float, sigma: float
+    ) -> List[Dict[str, Any]]:
+        """
+        对指定序列执行判异规则检测。
+        可被子图复用（X̄-S 的均值序列、I-MR 的单值序列）。
+        """
+        return check_western_electric_rules(sequence, cl, sigma)
 
 
 def calculate_spc(data: List[List[float]], chart_type: str = "xbar_r",
