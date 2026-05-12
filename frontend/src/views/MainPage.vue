@@ -605,17 +605,70 @@ const renderChart = (data: any) => {
     xAxis.data = primary.labels;
     
     series = [
-      { name: primary.unit, type: 'line', data: primary.data, smooth: true },
-      { name: 'UCL', type: 'line', data: Array(primary.data.length).fill(primary.ucl), linestyle: { type: 'dashed' }, color: '#ff4d4f' },
-      { name: 'CL', type: 'line', data: Array(primary.data.length).fill(primary.cl), linestyle: { type: 'dashed' }, color: '#52c41a' },
-      { name: 'LCL', type: 'line', data: Array(primary.data.length).fill(primary.lcl), linestyle: { type: 'dashed' }, color: '#ff4d4f' },
+      { name: primary.unit, type: 'line', data: primary.data, tooltip: { show: false } },
+      { name: 'UCL', type: 'line', data: Array(primary.data.length).fill(primary.ucl), linestyle: { type: 'dashed' }, color: '#ff4d4f', tooltip: { show: false } },
+      { name: 'CL', type: 'line', data: Array(primary.data.length).fill(primary.cl), linestyle: { type: 'dashed' }, color: '#52c41a', tooltip: { show: false } },
+      { name: 'LCL', type: 'line', data: Array(primary.data.length).fill(primary.lcl), linestyle: { type: 'dashed' }, color: '#ff4d4f', tooltip: { show: false } },
     ];
     
-    // 标记异常点
-    data.anomalies?.forEach((a: any) => {
-      series[0].markPoint = series[0].markPoint || { data: [] };
-      (series[0].markPoint.data as any[]).push({ coord: [a.index, a.value], itemStyle: { color: '#ff4d4f' } });
-    });
+    // 构建异常点 scatter 系列（hover 显示 tooltip）
+    if (data.anomalies && data.anomalies.length > 0) {
+      const primaryChartData = chartData[Object.keys(chartData)[0]];
+      series.push({
+        name: '异常点',
+        type: 'scatter',
+        symbolSize: 14,
+        itemStyle: {
+          color: '#ff4d4f',
+          borderColor: '#fff',
+          borderWidth: 2,
+          shadowBlur: 6,
+          shadowColor: 'rgba(255,77,79,0.5)',
+        },
+        z: 10,
+        // scatter 的 data 是 [x坐标, y坐标, anomalyIndex] 三元组
+        data: data.anomalies.map((a: any) => {
+          // 构造包含完整信息的 data 对象，供 tooltip formatter 使用
+          return {
+            value: [a.index, a.value],
+            label: primaryChartData.labels[a.index] || `样本 ${a.index + 1}`,
+            calcValue: a.value,
+            rawData: Array.isArray(data.subgroup_raw_data?.[a.index])
+              ? data.subgroup_raw_data[a.index]
+              : [],
+            ucl: primaryChartData.ucl,
+            cl: primaryChartData.cl,
+            lcl: primaryChartData.lcl,
+          };
+        }),
+        tooltip: {
+          show: true,
+          backgroundColor: 'rgba(50, 50, 50, 0.95)',
+          borderColor: '#ff4d4f',
+          borderWidth: 1,
+          padding: [12, 16],
+          textStyle: { color: '#fff', fontSize: 13 },
+          formatter: (params: any) => {
+            const d = params.data;
+            let html = `<div style="min-width:200px;">`;
+            html += `<div style="font-weight:600;font-size:14px;margin-bottom:8px;">${d.label}</div>`;
+            // 子组计算后的最终值
+            html += `<div style="margin-bottom:4px;">子组计算值：<b style="color:#ff4d4f;">${d.calcValue}</b></div>`;
+            // 子组原始数据
+            if (d.rawData && d.rawData.length > 0) {
+              html += `<div style="margin-bottom:4px;">原始数据：${d.rawData.join(', ')}</div>`;
+            }
+            // 控制限
+            html += `<div style="margin-bottom:4px;font-size:12px;color:#ccc;">`;
+            html += `UCL: ${Number(d.ucl).toFixed(4)}　CL: ${Number(d.cl).toFixed(4)}　LCL: ${Number(d.lcl).toFixed(4)}`;
+            html += `</div>`;
+            html += `<div style="color:#ff4d4f;font-weight:600;">⚠ 异常点</div>`;
+            html += `</div>`;
+            return html;
+          },
+        },
+      });
+    }
   } else if (chartData.histogram) {
     const hist = chartData.histogram;
     series = [{ type: 'bar', data: hist.frequencies.map((f: number, i: number) => ({ value: f, itemStyle: { color: '#1890ff' } })) }];
@@ -624,18 +677,75 @@ const renderChart = (data: any) => {
     const trend = chartData.trend;
     xAxis.data = trend.labels;
     series = [
-      { name: '数据', type: 'line', data: trend.data, smooth: true },
-      { name: '趋势线', type: 'line', data: trend.trend_line, smooth: true, lineStyle: { type: 'dashed' } },
+      { name: '数据', type: 'line', data: trend.data },
+      { name: '趋势线', type: 'line', data: trend.trend_line, lineStyle: { type: 'dashed' } },
     ];
+  }
+  
+  // 自动计算Y轴范围，避免从0开始
+  let yAxisMin: number | undefined;
+  let yAxisMax: number | undefined;
+  
+  if (chartData.xbar || chartData.individual || chartData.p || chartData.np || chartData.c || chartData.u) {
+    const primaryKey = Object.keys(chartData)[0];
+    const primary = chartData[primaryKey];
+    
+    // 收集所有相关数值：实际数据、UCL、CL、LCL、异常点值
+    const allValues: number[] = [
+      ...primary.data,
+      primary.ucl,
+      primary.cl,
+      primary.lcl,
+      ...(data.anomalies?.map((a: any) => a.value) || [])
+    ].filter(v => v !== null && v !== undefined && !isNaN(v));
+    
+    if (allValues.length > 0) {
+      const minVal = Math.min(...allValues);
+      const maxVal = Math.max(...allValues);
+      const padding = (maxVal - minVal) * 0.1 || maxVal * 0.1; // 10%边距，防止除零
+      
+      yAxisMin = Math.floor((minVal - padding) * 100) / 100; // 保留两位小数
+      yAxisMax = Math.ceil((maxVal + padding) * 100) / 100;
+      
+      // 确保最小值不为负数（对于某些质量控制指标）
+      if (yAxisMin < 0 && (chartData.p || chartData.np || chartData.c || chartData.u)) {
+        yAxisMin = 0;
+      }
+    }
+  } else if (chartData.histogram) {
+    // 直方图：Y轴是频率，可以从0开始
+    yAxisMin = 0;
+  } else if (chartData.trend) {
+    // 趋势图：类似控制图，计算数据范围
+    const trend = chartData.trend;
+    const allValues = [...trend.data, ...trend.trend_line].filter(v => v !== null && v !== undefined && !isNaN(v));
+    
+    if (allValues.length > 0) {
+      const minVal = Math.min(...allValues);
+      const maxVal = Math.max(...allValues);
+      const padding = (maxVal - minVal) * 0.1 || maxVal * 0.1;
+      
+      yAxisMin = Math.floor((minVal - padding) * 100) / 100;
+      yAxisMax = Math.ceil((maxVal + padding) * 100) / 100;
+    }
   }
   
   const option = {
     title: { text: data.chart_type.toUpperCase() + ' 控制图', left: 'center' },
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      show: true,
+      trigger: 'item',
+    },
     legend: { bottom: 10 },
     grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
     xAxis,
-    yAxis: { type: 'value' },
+    yAxis: { 
+      type: 'value',
+      min: yAxisMin,
+      max: yAxisMax,
+      // 强制显示坐标轴标签，防止自动隐藏
+      axisLabel: { show: true }
+    },
     series,
   };
   

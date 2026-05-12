@@ -224,6 +224,7 @@ class SPCResult:
     control_limits: Dict[str, float]  # 控制限
     anomalies: List[Dict[str, Any]]  # 异常点列表
     rules_violations: List[Dict[str, Any]]  # 判异规则违反
+    subgroup_raw_data: List[List[float]]  # 子组原始数据
 
 
 class SPCCalculator:
@@ -401,7 +402,8 @@ class SPCCalculator:
                 "UCL_R": float(UCL_R), "LCL_R": float(LCL_R), "CL_R": float(CL_R)
             },
             anomalies=anomalies,
-            rules_violations=rules_violations
+            rules_violations=rules_violations,
+            subgroup_raw_data=self.data  # 添加子组原始数据
         )
 
     def _calculate_xbar_s(self) -> SPCResult:
@@ -487,7 +489,8 @@ class SPCCalculator:
                 "UCL_S": float(UCL_S), "LCL_S": float(LCL_S), "CL_S": float(CL_S)
             },
             anomalies=anomalies,
-            rules_violations=rules_violations
+            rules_violations=rules_violations,
+            subgroup_raw_data=self.data  # 添加子组原始数据
         )
 
     def _calculate_i_mr(self) -> SPCResult:
@@ -570,7 +573,8 @@ class SPCCalculator:
                 "UCL_MR": float(UCL_MR), "LCL_MR": float(LCL_MR), "CL_MR": float(CL_MR)
             },
             anomalies=anomalies,
-            rules_violations=rules_violations
+            rules_violations=rules_violations,
+            subgroup_raw_data=self.data  # 添加子组原始数据（对于I-MR图，每个子组是单个值）
         )
 
     def _calculate_p_chart(self) -> SPCResult:
@@ -629,7 +633,8 @@ class SPCCalculator:
             statistics=statistics,
             control_limits={"UCL": float(UCL), "LCL": float(LCL), "CL": float(CL)},
             anomalies=anomalies,
-            rules_violations=[]
+            rules_violations=[],
+            subgroup_raw_data=self.data  # 添加子组原始数据（不合格品数）
         )
 
     def _calculate_np_chart(self) -> SPCResult:
@@ -683,7 +688,8 @@ class SPCCalculator:
             statistics=statistics,
             control_limits={"UCL": float(UCL), "LCL": float(LCL), "CL": float(CL)},
             anomalies=anomalies,
-            rules_violations=[]
+            rules_violations=[],
+            subgroup_raw_data=self.data  # 添加子组原始数据（不合格品数）
         )
 
     def _calculate_c_chart(self) -> SPCResult:
@@ -735,7 +741,8 @@ class SPCCalculator:
             statistics=statistics,
             control_limits={"UCL": float(UCL), "LCL": float(LCL), "CL": float(CL)},
             anomalies=anomalies,
-            rules_violations=[]
+            rules_violations=[],
+            subgroup_raw_data=self.data  # 添加子组原始数据（缺陷数）
         )
 
     def _calculate_u_chart(self) -> SPCResult:
@@ -791,7 +798,8 @@ class SPCCalculator:
             statistics=statistics,
             control_limits={"UCL": float(UCL), "LCL": float(LCL), "CL": float(CL)},
             anomalies=anomalies,
-            rules_violations=[]
+            rules_violations=[],
+            subgroup_raw_data=self.data  # 添加子组原始数据（缺陷数）
         )
 
     def _calculate_histogram(self) -> SPCResult:
@@ -837,7 +845,8 @@ class SPCCalculator:
             statistics=statistics,
             control_limits={},
             anomalies=[],
-            rules_violations=[]
+            rules_violations=[],
+            subgroup_raw_data=self.data  # 添加子组原始数据（直方图使用所有数据）
         )
 
     def _calculate_trend(self) -> SPCResult:
@@ -886,7 +895,8 @@ class SPCCalculator:
                 "CL": float(mean)
             },
             anomalies=[],
-            rules_violations=[]
+            rules_violations=[],
+            subgroup_raw_data=self.data  # 添加子组原始数据（趋势图使用所有数据）
         )
 
     def _check_western_electric_rules(self, data: np.ndarray,
@@ -932,5 +942,6 @@ def calculate_spc(data: List[List[float]], chart_type: str = "xbar_r",
         "control_limits": result.control_limits,
         "anomalies": result.anomalies,
         "rules_violations": result.rules_violations if show_rules else [],
-        "prediction_intervals": {}  # 预测区间(后续扩展)
+        "prediction_intervals": {},  # 预测区间(后续扩展)
+        "subgroup_raw_data": result.subgroup_raw_data  # 添加子组原始数据
     }

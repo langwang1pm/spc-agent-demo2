@@ -256,7 +256,12 @@ const loadTasks = async () => {
     await nextTick();
     tasks.value.forEach(task => {
       if (task.latest_data && task.latest_data.length > 0 && task.chart_type) {
-        renderChart(task.id, task.latest_data, task.chart_type, task.subgroup_size, task.confidence_level);
+        // 计算子组原始数据
+        const subgroupRawData: number[][] = [];
+        for (let i = 0; i < task.latest_data.length; i += task.subgroup_size) {
+          subgroupRawData.push(task.latest_data.slice(i, i + task.subgroup_size));
+        }
+        renderChart(task.id, task.latest_data, task.chart_type, task.subgroup_size, task.confidence_level, subgroupRawData);
       }
     });
   } catch (error) {
@@ -266,7 +271,7 @@ const loadTasks = async () => {
   }
 };
 
-const renderChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
+const renderChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null, subgroupRawData?: number[][]) => {
   const container = document.getElementById(`chart-${taskId}`);
   if (!container || !data || data.length === 0) return;
 
@@ -280,19 +285,101 @@ const renderChart = (taskId: number, data: number[], chartType: string, subgroup
   chartInstances[taskId] = chart;
 
   // 计算控制图数据
-  const chartData = calculateSPCData(data, chartType, subgroupSize, confidenceLevel);
+  const chartData = calculateSPCData(data, chartType, subgroupSize, confidenceLevel, subgroupRawData);
 
+  // 自动计算Y轴范围，避免从0开始
+  let yAxisMin: number | undefined;
+  let yAxisMax: number | undefined;
+  
+  // 收集所有系列的数据值
+  const allValues: number[] = [];
+  chartData.series.forEach((s: any) => {
+    if (s.data && Array.isArray(s.data)) {
+      s.data.forEach((val: any) => {
+        if (typeof val === 'number' && !isNaN(val)) {
+          allValues.push(val);
+        }
+      });
+    }
+  });
+  
+  if (allValues.length > 0) {
+    const minVal = Math.min(...allValues);
+    const maxVal = Math.max(...allValues);
+    const padding = (maxVal - minVal) * 0.1 || maxVal * 0.1; // 10%边距，防止除零
+    
+    yAxisMin = Math.floor((minVal - padding) * 100) / 100;
+    yAxisMax = Math.ceil((maxVal + padding) * 100) / 100;
+    
+    // 对于比例/计数型控制图，确保Y轴最小值不小于0
+    if (chartType === 'p_chart' || chartType === 'np_chart' || chartType === 'c_chart' || chartType === 'u_chart') {
+      yAxisMin = Math.max(0, yAxisMin);
+    }
+  }
+  
   const option = {
     title: {
       text: getChartTitle(chartType),
       left: 'center',
       textStyle: { fontSize: 12 }
     },
-    tooltip: { trigger: 'axis' },
+    tooltip: { 
+      trigger: 'axis',
+      formatter: (params: any) => {
+        // 当前数据点的索引
+        const dataIndex = params[0]?.dataIndex;
+        if (dataIndex === undefined) return '';
+        
+        // 当前数据点的值（从series[0]获取）
+        const currentValue = chartData.series[0]?.data?.[dataIndex];
+        
+        // 构建 tooltip 内容
+        let html = `<div style="padding: 8px;">`;
+        html += `<strong>${chartData.labels[dataIndex] || '样本 ' + (dataIndex + 1)}</strong><br/>`;
+        html += `子组计算的最终数据: <strong>${currentValue}</strong><br/>`;
+        
+        // 如果有子组原始数据，显示它
+        if (chartData.subgroup_raw_data && chartData.subgroup_raw_data[dataIndex]) {
+          const rawData = chartData.subgroup_raw_data[dataIndex];
+          html += `子组的原始数据: <strong>${rawData.join(', ')}</strong><br/>`;
+        }
+        
+        // 显示UCL/CL/LCL（从series中获取）
+        const uclSeries = chartData.series.find((s: any) => s.name === 'UCL');
+        const clSeries = chartData.series.find((s: any) => s.name === 'CL');
+        const lclSeries = chartData.series.find((s: any) => s.name === 'LCL');
+        
+        if (uclSeries && clSeries) {
+          html += `UCL: ${uclSeries.data[dataIndex]?.toFixed(4) || 'N/A'} | CL: ${clSeries.data[dataIndex]?.toFixed(4) || 'N/A'}`;
+          if (lclSeries) {
+            html += ` | LCL: ${lclSeries.data[dataIndex]?.toFixed(4) || 'N/A'}`;
+          }
+          html += `<br/>`;
+        }
+        
+        // 检查是否是异常点（与UCL/LCL比较）
+        if (uclSeries && lclSeries && currentValue !== undefined) {
+          const ucl = uclSeries.data[dataIndex];
+          const lcl = lclSeries.data[dataIndex];
+          if (currentValue > ucl || currentValue < lcl) {
+            html += `<span style="color: #ff4d4f; font-weight: bold;">⚠️ 异常点（超出控制限）</span>`;
+          }
+        }
+        
+        html += `</div>`;
+        return html;
+      }
+    },
     legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 10 } },
     grid: { left: '3%', right: '3%', bottom: '15%', top: '15%', containLabel: true },
     xAxis: { type: 'category', data: chartData.labels },
-    yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
+    yAxis: { 
+      type: 'value', 
+      splitLine: { lineStyle: { type: 'dashed' } },
+      min: yAxisMin,
+      max: yAxisMax,
+      axisLabel: { show: true }
+    },
     series: chartData.series,
   };
 
@@ -300,14 +387,14 @@ const renderChart = (taskId: number, data: number[], chartType: string, subgroup
 };
 
 // 增量更新图表(只刷当前卡片,不影响其他实例)
-const updateChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
+const updateChart = (taskId: number, data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null, subgroupRawData?: number[][]) => {
   const chart = chartInstances[taskId];
   if (!chart) {
     // 实例不存在(卡片首次有数据),走完整初始化
-    renderChart(taskId, data, chartType, subgroupSize, confidenceLevel);
+    renderChart(taskId, data, chartType, subgroupSize, confidenceLevel, subgroupRawData);
     return;
   }
-  const chartData = calculateSPCData(data, chartType, subgroupSize, confidenceLevel);
+  const chartData = calculateSPCData(data, chartType, subgroupSize, confidenceLevel, subgroupRawData);
   chart.setOption({
     xAxis: { data: chartData.labels },
     series: chartData.series,
@@ -335,7 +422,12 @@ const startPolling = async () => {
 
         tasks.value[i] = { ...tasks.value[i], ...fresh };
         if (fresh.latest_data && fresh.latest_data.length > 0 && fresh.chart_type) {
-          updateChart(tasks.value[i].id, fresh.latest_data, fresh.chart_type, fresh.subgroup_size, fresh.confidence_level);
+          // 计算子组原始数据
+          const subgroupRawData: number[][] = [];
+          for (let i = 0; i < fresh.latest_data.length; i += fresh.subgroup_size) {
+            subgroupRawData.push(fresh.latest_data.slice(i, i + fresh.subgroup_size));
+          }
+          updateChart(tasks.value[i].id, fresh.latest_data, fresh.chart_type, fresh.subgroup_size, fresh.confidence_level, subgroupRawData);
         }
       }
     } catch (e) {
@@ -352,7 +444,7 @@ const stopPolling = () => {
 };
 
 // 计算SPC数据
-const calculateSPCData = (data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null) => {
+const calculateSPCData = (data: number[], chartType: string, subgroupSize: number, confidenceLevel: string | null, subgroupRawData?: number[][]) => {
   const labels = data.map((_, i) => `${i + 1}`);
   const series: any[] = [];
 
@@ -361,22 +453,86 @@ const calculateSPCData = (data: number[], chartType: string, subgroupSize: numbe
     // 均值图
     const { means, ucl, cl, lcl } = calculateXBar(data, subgroupSize, confidenceLevel);
     series.push(
-      { name: '均值', type: 'line', data: means, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
+      { name: '均值', type: 'line', data: means, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
       { name: 'UCL', type: 'line', data: Array(means.length).fill(ucl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' },
       { name: 'CL', type: 'line', data: Array(means.length).fill(cl), lineStyle: { type: 'dashed', width: 1 }, color: '#52c41a', symbol: 'none' },
       { name: 'LCL', type: 'line', data: Array(means.length).fill(lcl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' }
     );
-    return { labels: means.map((_, i) => `${i + 1}`), series };
+    
+    // 标记异常点（超出UCL或LCL）
+    const markPointData: any[] = [];
+    means.forEach((value, index) => {
+      if (value > ucl || value < lcl) {
+        markPointData.push({ coord: [index, value], value: value, itemStyle: { color: '#ff4d4f' } });
+      }
+    });
+    if (markPointData.length > 0) {
+      series[0].markPoint = { data: markPointData, tooltip: { show: true, formatter: (params: any) => {
+        const dataIndex = params.dataIndex || 0;
+        const currentValue = params.value || params.data?.value || means[dataIndex];
+        
+        // 构建 tooltip 内容
+        let html = `<div style="padding: 8px;">`;
+        html += `<strong>${means.map((_, i) => `${i + 1}`)[dataIndex] || '样本 ' + (dataIndex + 1)}</strong><br/>`;
+        html += `子组计算的最终数据: <strong>${currentValue}</strong><br/>`;
+        
+        // 如果有子组原始数据，显示它
+        if (subgroupRawData && subgroupRawData[dataIndex]) {
+          const rawData = subgroupRawData[dataIndex];
+          html += `子组的原始数据: <strong>${rawData.join(', ')}</strong><br/>`;
+        }
+        
+        html += `UCL: ${ucl.toFixed(4)} | CL: ${cl.toFixed(4)} | LCL: ${lcl.toFixed(4)}<br/>`;
+        html += `<span style="color: #ff4d4f; font-weight: bold;">⚠️ 异常点（超出控制限）</span>`;
+        
+        html += `</div>`;
+        return html;
+      } } };
+    }
+    
+    return { labels: means.map((_, i) => `${i + 1}`), series, subgroup_raw_data: subgroupRawData };
   } else if (chartType === 'i_mr') {
     // 单值移动极差图
     const { values, ucl, cl, lcl } = calculateIMR(data, confidenceLevel);
     series.push(
-      { name: '单值', type: 'line', data: values, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
+      { name: '单值', type: 'line', data: values, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
       { name: 'UCL', type: 'line', data: Array(values.length).fill(ucl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' },
       { name: 'CL', type: 'line', data: Array(values.length).fill(cl), lineStyle: { type: 'dashed', width: 1 }, color: '#52c41a', symbol: 'none' },
       { name: 'LCL', type: 'line', data: Array(values.length).fill(lcl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' }
     );
-    return { labels: labels.slice(0, values.length), series };
+    
+    // 标记异常点（超出UCL或LCL）
+    const markPointData: any[] = [];
+    values.forEach((value, index) => {
+      if (value > ucl || value < lcl) {
+        markPointData.push({ coord: [index, value], value: value, itemStyle: { color: '#ff4d4f' } });
+      }
+    });
+    if (markPointData.length > 0) {
+      series[0].markPoint = { data: markPointData, tooltip: { show: true, formatter: (params: any) => {
+        const dataIndex = params.dataIndex || 0;
+        const currentValue = params.value || params.data?.value || values[dataIndex];
+        
+        // 构建 tooltip 内容
+        let html = `<div style="padding: 8px;">`;
+        html += `<strong>${labels.slice(0, values.length)[dataIndex] || '样本 ' + (dataIndex + 1)}</strong><br/>`;
+        html += `子组计算的最终数据: <strong>${currentValue}</strong><br/>`;
+        
+        // 如果有子组原始数据，显示它
+        if (subgroupRawData && subgroupRawData[dataIndex]) {
+          const rawData = subgroupRawData[dataIndex];
+          html += `子组的原始数据: <strong>${rawData.join(', ')}</strong><br/>`;
+        }
+        
+        html += `UCL: ${ucl.toFixed(4)} | CL: ${cl.toFixed(4)} | LCL: ${lcl.toFixed(4)}<br/>`;
+        html += `<span style="color: #ff4d4f; font-weight: bold;">⚠️ 异常点（超出控制限）</span>`;
+        
+        html += `</div>`;
+        return html;
+      } } };
+    }
+    
+    return { labels: labels.slice(0, values.length), series, subgroup_raw_data: subgroupRawData };
   } else {
     // 默认趋势图
     const mean = data.reduce((a, b) => a + b, 0) / data.length;
@@ -384,12 +540,44 @@ const calculateSPCData = (data: number[], chartType: string, subgroupSize: numbe
     const ucl = mean + 3 * std;
     const lcl = mean - 3 * std;
     series.push(
-      { name: '数据', type: 'line', data: data, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
+      { name: '数据', type: 'line', data: data, symbol: 'circle', symbolSize: 4, lineStyle: { width: 1.5 } },
       { name: 'UCL', type: 'line', data: Array(data.length).fill(ucl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' },
       { name: 'CL', type: 'line', data: Array(data.length).fill(mean), lineStyle: { type: 'dashed', width: 1 }, color: '#52c41a', symbol: 'none' },
       { name: 'LCL', type: 'line', data: Array(data.length).fill(lcl), lineStyle: { type: 'dashed', width: 1 }, color: '#ff4d4f', symbol: 'none' }
     );
-    return { labels, series };
+    
+    // 标记异常点（超出UCL或LCL）
+    const markPointData: any[] = [];
+    data.forEach((value, index) => {
+      if (value > ucl || value < lcl) {
+        markPointData.push({ coord: [index, value], value: value, itemStyle: { color: '#ff4d4f' } });
+      }
+    });
+    if (markPointData.length > 0) {
+      series[0].markPoint = { data: markPointData, tooltip: { show: true, formatter: (params: any) => {
+        const dataIndex = params.dataIndex || 0;
+        const currentValue = params.value || params.data?.value || data[dataIndex];
+        
+        // 构建 tooltip 内容
+        let html = `<div style="padding: 8px;">`;
+        html += `<strong>${labels[dataIndex] || '样本 ' + (dataIndex + 1)}</strong><br/>`;
+        html += `子组计算的最终数据: <strong>${currentValue}</strong><br/>`;
+        
+        // 如果有子组原始数据，显示它
+        if (subgroupRawData && subgroupRawData[dataIndex]) {
+          const rawData = subgroupRawData[dataIndex];
+          html += `子组的原始数据: <strong>${rawData.join(', ')}</strong><br/>`;
+        }
+        
+        html += `UCL: ${ucl.toFixed(4)} | CL: ${mean.toFixed(4)} | LCL: ${lcl.toFixed(4)}<br/>`;
+        html += `<span style="color: #ff4d4f; font-weight: bold;">⚠️ 异常点（超出控制限）</span>`;
+        
+        html += `</div>`;
+        return html;
+      } } };
+    }
+    
+    return { labels, series, subgroup_raw_data: subgroupRawData };
   }
 };
 
@@ -457,6 +645,14 @@ const handleExport = (taskId: number) => {
   const task = tasks.value.find(t => t.id === taskId);
   if (!task) return;
 
+  // 计算子组原始数据
+  const subgroupRawData: number[][] = [];
+  if (task.latest_data && task.subgroup_size) {
+    for (let i = 0; i < task.latest_data.length; i += task.subgroup_size) {
+      subgroupRawData.push(task.latest_data.slice(i, i + task.subgroup_size));
+    }
+  }
+
   const chart = chartInstances[taskId];
   if (!chart) {
     // 如果图表实例不存在,创建一个临时图表来导出
@@ -468,14 +664,48 @@ const handleExport = (taskId: number) => {
     document.body.appendChild(tempContainer);
 
     const tempChart = echarts.init(tempContainer);
-    const chartData = calculateSPCData(task.latest_data!, task.chart_type!, task.subgroup_size, task.confidence_level);
+    const chartData = calculateSPCData(task.latest_data!, task.chart_type!, task.subgroup_size, task.confidence_level, subgroupRawData);
     tempChart.setOption({
       title: { text: getChartTitle(task.chart_type!), left: 'center', textStyle: { fontSize: 14 } },
       tooltip: { trigger: 'axis' },
       legend: { bottom: 0, type: 'scroll' },
       grid: { left: '3%', right: '3%', bottom: '10%', top: '15%', containLabel: true },
       xAxis: { type: 'category', data: chartData.labels },
-      yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
+      yAxis: (() => {
+        // 自动计算Y轴范围
+        const allValues: number[] = [];
+        chartData.series.forEach((s: any) => {
+          if (s.data && Array.isArray(s.data)) {
+            s.data.forEach((val: any) => {
+              if (typeof val === 'number' && !isNaN(val)) {
+                allValues.push(val);
+              }
+            });
+          }
+        });
+        
+        let min: number | undefined;
+        let max: number | undefined;
+        if (allValues.length > 0) {
+          const minVal = Math.min(...allValues);
+          const maxVal = Math.max(...allValues);
+          const padding = (maxVal - minVal) * 0.1 || maxVal * 0.1;
+          min = Math.floor((minVal - padding) * 100) / 100;
+          max = Math.ceil((maxVal + padding) * 100) / 100;
+          
+          if (task.chart_type === 'p_chart' || task.chart_type === 'np_chart' || task.chart_type === 'c_chart' || task.chart_type === 'u_chart') {
+            min = Math.max(0, min);
+          }
+        }
+        
+        return { 
+          type: 'value', 
+          splitLine: { lineStyle: { type: 'dashed' } },
+          min,
+          max,
+          axisLabel: { show: true }
+        };
+      })(),
       series: chartData.series,
     });
 

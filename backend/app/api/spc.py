@@ -227,7 +227,8 @@ async def refresh_spc_data(
                     "statistics": spc_result["statistics"],
                     "control_limits": spc_result["control_limits"],
                     "anomalies": spc_result["anomalies"],
-                    "rules_violations": spc_result["rules_violations"]
+                    "rules_violations": spc_result["rules_violations"],
+                    "subgroup_raw_data": spc_result["subgroup_raw_data"]  # 添加子组原始数据
                 },
                 "refreshed_at": datetime.now().isoformat()
             }
@@ -292,7 +293,8 @@ async def calculate_spc_chart(
             "statistics": result["statistics"],
             "control_limits": result["control_limits"],
             "anomalies": result["anomalies"],
-            "rules_violations": result["rules_violations"]
+            "rules_violations": result["rules_violations"],
+            "subgroup_raw_data": result["subgroup_raw_data"]  # 添加子组原始数据
         }
     )
 

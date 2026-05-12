@@ -20,6 +20,14 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
     from app.services.monitor import start_scheduler
+    from app.core.database import engine, Base
+    from app.models import models
+    
+    # 初始化数据库表
+    Base.metadata.create_all(bind=engine)
+    print("[OK] Database tables initialized")
+    
+    # 启动监控调度器
     start_scheduler()
     print(f"[OK] {settings.APP_NAME} v{settings.APP_VERSION} started")
     
@@ -77,16 +85,8 @@ async def health_check():
     return {"status": "healthy"}
 
 
-# 数据库初始化命令
-@app.on_event("startup")
-async def init_database():
-    """初始化数据库表"""
-    from app.core.database import engine, Base
-    from app.models import models
-    
-    # 创建所有表
-    Base.metadata.create_all(bind=engine)
-    print("[OK] Database tables initialized")
+# 数据库初始化已移至lifespan管理中
+# 在应用启动时自动处理数据库初始化
 
 
 if __name__ == "__main__":
