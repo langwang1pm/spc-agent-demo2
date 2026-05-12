@@ -338,6 +338,18 @@ async def run_monitor_task(task_id: int) -> Dict[str, Any]:
             old_snapshot, latest_full
         )
 
+        # ---- 排序一致性修正 ----
+        # 若新数据以头部插入方式追加（ORDER BY DESC 场景），
+        # latest_full 顺序为 newest-first，直接用于 SPC 会导致新增数据
+        # 被分到子组1而非最后一个子组。此处倒置数组，使最新数据排在末尾，
+        # 符合 SPC 顺序预期，并同步修正快照存储顺序。
+        if start_idx == 0 and end_idx > 0 and len(new_points) > 0:
+            latest_full = list(reversed(latest_full))
+            old_snapshot = None  # 倒置后旧快照作废，重新计算增量
+            start_idx, end_idx, new_points = _detect_new_data_indices(
+                old_snapshot, latest_full
+            )
+
         task.last_run_at = datetime.now(timezone.utc)
         task.last_result = {"new_data_count": len(new_points)}
 
@@ -353,7 +365,7 @@ async def run_monitor_task(task_id: int) -> Dict[str, Any]:
             }
 
         # ---- 全量 SPC 计算 ----
-        # 全量二维数组
+        # latest_full 此时已统一为 newest-last 顺序
         data_2d = _convert_to_2d(latest_full, subgroup_size)
         if not data_2d:
             return {"success": False, "error": "No valid data groups for SPC calculation"}

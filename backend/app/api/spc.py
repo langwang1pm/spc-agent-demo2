@@ -33,6 +33,18 @@ def _convert_to_2d(data_values: List[float], subgroup_size: int) -> List[List[fl
     return result
 
 
+def _detect_desc_order(query_config: str) -> bool:
+    """
+    检测查询语句是否按 DESC 排序（最新数据在最前），若是则需倒置数组。
+    匹配 order by ... desc（忽略大小写和空白），排除 comment 中的情况。
+    """
+    import re
+    # 去掉 -- 单行注释和 /* */ 多行注释，避免误判
+    cleaned = re.sub(r'--.*?(\n|$)', '\n', query_config)
+    cleaned = re.sub(r'/\*.*?\*/', '', cleaned, flags=re.DOTALL)
+    return bool(re.search(r'\border\s+by\s+.*\bdesc\b', cleaned, re.IGNORECASE))
+
+
 def _get_data_values_from_source(
     data_source: DataSource,
     subgroup_size: int = 5
@@ -76,6 +88,9 @@ def _get_data_values_from_source(
                 connection_config=data_source.connection_config,
                 query_config=data_source.query_config
             )
+            # ORDER BY ... DESC 检测：若查询按降序排列，最新数据在前，需倒置为 newest-last
+            if _detect_desc_order(data_source.query_config):
+                raw_values = list(reversed(raw_values))
             # 将一维数组转换为二维数组（按子组大小分组）
             return _convert_to_2d(raw_values, subgroup_size)
         except SystemQueryError as e:
